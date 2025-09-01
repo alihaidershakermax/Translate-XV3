@@ -17,3 +17,5 @@ python-docx
 python-telegram-bot
 reportlab
 telegram
+groq
+groq

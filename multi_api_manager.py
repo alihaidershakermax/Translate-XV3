@@ -12,6 +12,7 @@ import os
 import json
 from datetime import datetime, timedelta
 import google.generativeai as genai
+from groq import Groq
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ class MultiAPIManager:
         return False
 
 class MultiGeminiTranslatorManager:
-    """مدير ترجمة متعدد مع إدارة مفاتيح API"""
+    """مدير ترجمة متعدد مع إدارة مفاتيح API ودعم Groq كخدمة احتياطية"""
     
     def __init__(self, api_keys: List[str], model: str = "gemini-2.5-flash"):
         self.api_keys = api_keys if api_keys else []
@@ -146,12 +147,56 @@ class MultiGeminiTranslatorManager:
         self.current_key_index = 0
         self.semaphore = asyncio.Semaphore(8)
         
+        # Groq configuration
+        self.groq_api_key = os.getenv("GROQ_API_KEY", "")
+        self.groq_model = "gemma2-9b-it"
+        self.groq_client = None
+        
+        if self.groq_api_key:
+            try:
+                self.groq_client = Groq(api_key=self.groq_api_key)
+                logger.info("Groq client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Groq client: {e}")
+        
         # Add keys to parent manager
         for i, key in enumerate(self.api_keys):
             multi_api_manager.add_api_key(key, f"Config_Key_{i+1}")
     
+    async def translate_with_groq(self, text: str) -> str:
+        """ترجمة باستخدام Groq كخدمة احتياطية"""
+        if not self.groq_client or not text.strip():
+            return text
+        
+        try:
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"Translate the following English text to Arabic. Return only the Arabic translation without any explanations:\n\n{text.strip()}"
+                }
+            ]
+            
+            completion = await asyncio.to_thread(
+                self.groq_client.chat.completions.create,
+                model=self.groq_model,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=1024,
+                top_p=1,
+                stream=False
+            )
+            
+            if completion.choices and completion.choices[0].message.content:
+                return completion.choices[0].message.content.strip()
+            else:
+                return text
+                
+        except Exception as e:
+            logger.error(f"Groq translation failed: {e}")
+            return text
+
     async def translate_single_line(self, text: str) -> str:
-        """ترجمة سطر واحد - محسّن للأداء"""
+        """ترجمة سطر واحد - محسّن للأداء مع دعم Groq"""
         if not text or text.strip() == "":
             return ""
         
@@ -162,11 +207,15 @@ class MultiGeminiTranslatorManager:
             
         async with self.semaphore:
             max_retries = 2  # Reduced retries for single lines
+            
+            # Try Gemini first
             for attempt in range(max_retries):
                 try:
                     api_key = multi_api_manager.get_current_api_key()
                     if not api_key:
-                        raise Exception("لا توجد مفاتيح API متاحة")
+                        # If no Gemini keys available, try Groq
+                        logger.info("No Gemini keys available, trying Groq")
+                        return await self.translate_with_groq(clean_text)
                     
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(self.model)
@@ -189,11 +238,15 @@ class MultiGeminiTranslatorManager:
                     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
                         multi_api_manager.mark_key_failed(api_key, "Quota exceeded")
                         if attempt == max_retries - 1:
-                            raise Exception("تم تجاوز حصة الترجمة لجميع المفاتيح")
+                            # Try Groq as fallback
+                            logger.info("All Gemini keys exhausted, trying Groq")
+                            return await self.translate_with_groq(clean_text)
                     else:
                         logger.warning(f"Translation attempt {attempt + 1} failed: {e}")
                         if attempt == max_retries - 1:
-                            return clean_text  # Return original instead of raising error
+                            # Try Groq before returning original
+                            groq_result = await self.translate_with_groq(clean_text)
+                            return groq_result if groq_result != clean_text else clean_text
                     
                     await asyncio.sleep(0.5)  # Shorter delay
             
@@ -204,8 +257,63 @@ class MultiGeminiTranslatorManager:
         # Use batch translation for better API efficiency
         return await self.translate_batch_with_progress(lines, progress_callback)
     
+    async def translate_batch_with_groq(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
+        """ترجمة دفعية باستخدام Groq"""
+        if not self.groq_client or not lines:
+            return [(line, line) for line in lines]
+        
+        try:
+            if progress_callback:
+                await progress_callback(0, 100, "ترجمة باستخدام Groq")
+            
+            # Prepare the batch text
+            batch_text = ""
+            for i, line in enumerate(lines):
+                if line.strip():
+                    batch_text += f"{i+1}. {line.strip()}\n"
+            
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"""Translate the following numbered English lines to Arabic. 
+Keep the exact same numbering format and return only the Arabic translations with their numbers:
+
+{batch_text}
+
+Important: Keep the same line numbers (1., 2., 3., etc.) and translate only the text content."""
+                }
+            ]
+            
+            if progress_callback:
+                await progress_callback(50, 100, "إرسال للـ Groq")
+            
+            completion = await asyncio.to_thread(
+                self.groq_client.chat.completions.create,
+                model=self.groq_model,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=2048,
+                top_p=1,
+                stream=False
+            )
+            
+            if completion.choices and completion.choices[0].message.content:
+                translated_text = completion.choices[0].message.content.strip()
+                translated_pairs = self._parse_batch_translation(lines, translated_text)
+                
+                if progress_callback:
+                    await progress_callback(100, 100, "اكتملت الترجمة باستخدام Groq")
+                
+                return translated_pairs
+            else:
+                return [(line, line) for line in lines]
+                
+        except Exception as e:
+            logger.error(f"Groq batch translation failed: {e}")
+            return [(line, line) for line in lines]
+
     async def translate_batch_with_progress(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
-        """ترجمة النص كدفعة واحدة لتقليل استهلاك API"""
+        """ترجمة النص كدفعة واحدة لتقليل استهلاك API مع دعم Groq"""
         if not lines:
             return []
         
@@ -222,7 +330,7 @@ class MultiGeminiTranslatorManager:
             if progress_callback:
                 await progress_callback(20, 100, "إرسال النص للذكاء الاصطناعي")
             
-            # Send the entire batch to API
+            # Try Gemini first
             max_retries = 3
             translated_text = None
             
@@ -230,7 +338,9 @@ class MultiGeminiTranslatorManager:
                 try:
                     api_key = multi_api_manager.get_current_api_key()
                     if not api_key:
-                        raise Exception("لا توجد مفاتيح API متاحة")
+                        # No Gemini keys available, try Groq
+                        logger.info("No Gemini keys available, trying Groq for batch translation")
+                        return await self.translate_batch_with_groq(lines, progress_callback)
                     
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(self.model)
@@ -261,11 +371,17 @@ Important: Keep the same line numbers (1., 2., 3., etc.) and translate only the 
                     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
                         multi_api_manager.mark_key_failed(api_key, "Quota exceeded")
                         if attempt == max_retries - 1:
-                            raise Exception("تم تجاوز حصة الترجمة لجميع المفاتيح")
+                            # Try Groq as fallback
+                            logger.info("All Gemini keys exhausted, trying Groq for batch translation")
+                            return await self.translate_batch_with_groq(lines, progress_callback)
                     else:
                         logger.warning(f"Batch translation attempt {attempt + 1} failed: {e}")
                         if attempt == max_retries - 1:
-                            # Fallback to line-by-line translation
+                            # Try Groq before falling back to line-by-line
+                            groq_result = await self.translate_batch_with_groq(lines, progress_callback)
+                            if groq_result:
+                                return groq_result
+                            # Final fallback to line-by-line translation
                             return await self.translate_lines_fallback(lines, progress_callback)
                     
                     await asyncio.sleep(1)
@@ -283,7 +399,11 @@ Important: Keep the same line numbers (1., 2., 3., etc.) and translate only the 
             
         except Exception as e:
             logger.error(f"Batch translation failed: {e}")
-            # Fallback to line-by-line translation
+            # Try Groq before final fallback
+            groq_result = await self.translate_batch_with_groq(lines, progress_callback)
+            if groq_result:
+                return groq_result
+            # Final fallback to line-by-line translation
             return await self.translate_lines_fallback(lines, progress_callback)
     
     def _parse_batch_translation(self, original_lines: List[str], translated_text: str) -> List[Tuple[str, str]]:
