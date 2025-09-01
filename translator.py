@@ -119,13 +119,19 @@ Keep the same numbering format and return only the Arabic translations:
                 except Exception as e:
                     error_str = str(e)
                     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                        multi_api_manager.mark_key_failed(api_key, "Quota exceeded")
+                        multi_api_manager.mark_key_failed(api_key, "API limit reached")
                         if attempt == max_retries - 1:
-                            raise Exception("تم تجاوز حصة الترجمة لجميع المفاتيح")
+                            # Use local translator as final fallback
+                            from local_translator import local_translator
+                            result = await local_translator.translate_lines(batch)
+                            return result
                     else:
                         logger.warning(f"Translation attempt {attempt + 1} failed: {e}")
                         if attempt == max_retries - 1:
-                            raise e
+                            # Use local translator as final fallback
+                            from local_translator import local_translator
+                            result = await local_translator.translate_lines(batch)
+                            return result
                     
                     await asyncio.sleep(1)
 

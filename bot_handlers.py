@@ -654,17 +654,9 @@ class BotHandlers:
             logger.error(f"Document processing failed for user {user_id}: {e}")
             error_msg = str(e)
 
-            # Check if it's a quota error
-            if "حصة الترجمة" in error_msg or "quota" in error_msg.lower():
-                await query.edit_message_text(
-                    "❌ **تم تجاوز حصة الترجمة اليومية**\n\n"
-                    "🔄 يرجى المحاولة غداً أو الاتصال بالمطور لترقية الخطة.\n\n"
-                    "💡 **نصيحة:** يمكنك تقسيم الملف إلى أجزاء أصغر."
-                )
-            else:
-                await query.edit_message_text(
-                    f"❌ فشل في المعالجة: {error_msg}\n\nيرجى المحاولة مرة أخرى."
-                )
+            await query.edit_message_text(
+                f"❌ فشل في المعالجة: {error_msg}\n\nيرجى المحاولة مرة أخرى."
+            )
         finally:
             # Clean up temporary files
             await self.cleanup_manager.cleanup_files(temp_files)
