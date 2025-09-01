@@ -1,0 +1,34 @@
+25-09-01 23:37:57,947 - telegram.ext.Application - INFO - Application is stopping. This might take a moment.
+2025-09-01 23:37:57,948 - telegram.ext.Application - CRITICAL - Fetching updates was aborted due to CancelledError(). Suppressing exception to ensure graceful shutdown.
+Traceback (most recent call last):
+  File "/home/runner/workspace/main.py", line 139, in run_bot
+    loop.run_until_complete(main())
+  File "/nix/store/7d088dip86hlzri9sk0h78b63yfmx0a0-python3-3.11.13/lib/python3.11/asyncio/base_events.py", line 641, in run_until_complete
+    self.run_forever()
+  File "/nix/store/7d088dip86hlzri9sk0h78b63yfmx0a0-python3-3.11.13/lib/python3.11/asyncio/base_events.py", line 608, in run_forever
+    self._run_once()
+  File "/nix/store/7d088dip86hlzri9sk0h78b63yfmx0a0-python3-3.11.13/lib/python3.11/asyncio/base_events.py", line 1898, in _run_once
+    event_list = self._selector.select(timeout)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nix/store/7d088dip86hlzri9sk0h78b63yfmx0a0-python3-3.11.13/lib/python3.11/selectors.py", line 468, in select
+    fd_event_list = self._selector.poll(timeout, max_ev)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/main.py", line 46, in signal_handler
+    sys.exit(0)
+SystemExit: 0
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/telegram/ext/_application.py", line 673, in stop
+    self.__update_fetcher_task.result()
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/telegram/ext/_application.py", line 1228, in _update_fetcher
+    await self.__update_fetcher()
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/telegram/ext/_application.py", line 1207, in __update_fetcher
+    update = await self.update_queue.get()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nix/store/7d088dip86hlzri9sk0h78b63yfmx0a0-python3-3.11.13/lib/python3.11/asyncio/queues.py", line 158, in get
+    await getter
+asyncio.exceptions.CancelledError
+2025-09-01 23:37:57,950 - telegram.ext.Application - INFO - Application.stop() complete
+2025-09-01 23:37:58,063 - database_manager - INFO - Database connection closed
