@@ -524,3 +524,7 @@ class WordDocumentGenerator:
         except Exception as e:
             logger.error(f"Failed to create bilingual PDF: {e}")
             raise Exception(f"Simple bilingual PDF generation failed: {str(e)}")
+
+    def _is_arabic(self, text: str) -> bool:
+        """Check if the text contains Arabic characters."""
+        return any('\u0600' <= char <= '\u06FF' for char in text)
