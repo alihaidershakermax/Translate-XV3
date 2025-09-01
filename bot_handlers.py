@@ -22,6 +22,8 @@ from document_generator import WordDocumentGenerator
 from utils import RateLimiter, DailyRateLimiter, FileCleanupManager
 from ui_config import ui_config
 from multi_api_manager import multi_api_manager, MultiGeminiTranslatorManager
+from database_manager import db_manager
+
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ class BotHandlers:
     """Handles all bot interactions and message processing."""
 
     def __init__(self, config: Config):
+        """Initialize the bot handlers with necessary components."""
         self.config = config
         self.file_processor = FileProcessor()
         # Initialize multi_api_manager with config which contains the list of API keys
@@ -51,10 +54,10 @@ class BotHandlers:
         """Update progress message with real percentage and estimated time."""
         try:
             percentage = int((current / total) * 100) if total > 0 else 0
-            
+
             # Calculate estimated time
             estimated_time = self._calculate_estimated_time(current, total, description)
-            
+
             progress_text = f"""
 🔄 **جاري المعالجة...**
 
@@ -76,7 +79,7 @@ class BotHandlers:
             )
         except Exception as e:
             logger.warning(f"Failed to update progress: {e}")
-    
+
     def _calculate_estimated_time(self, current: int, total: int, description: str) -> str:
         """Calculate estimated time based on current progress and stage."""
         if current == 0:
@@ -94,11 +97,11 @@ class BotHandlers:
                 return "~20 ثانية"
             else:
                 return "~1 دقيقة"
-        
+
         # Calculate based on progress
         if current >= total:
             return "اكتمل"
-        
+
         remaining = total - current
         if "ترجمة" in description:
             remaining_seconds = remaining * 3
@@ -208,7 +211,7 @@ class BotHandlers:
         except Exception as e:
             logger.error(f"Error in status command: {e}")
             await update.message.reply_text("❌ حدث خطأ في فحص الحالة. يرجى المحاولة مرة أخرى.")
-    
+
     async def _show_admin_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show comprehensive status for admins/owners."""
         # Check bot status
@@ -280,17 +283,17 @@ class BotHandlers:
         """
 
         await message.edit_text(updated_status)
-    
+
     async def _show_user_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
         """Show personal status for regular users."""
         # Get user's daily usage
         user_daily_count = self.daily_limiter.get_user_count(user_id)
         user_hourly_count = self.rate_limiter.get_user_count(user_id)
-        
+
         # Calculate time until next reset
         next_hourly_reset = self.rate_limiter.get_next_reset_time(user_id)
         next_daily_reset = self.daily_limiter.get_next_reset_time(user_id)
-        
+
         # Format reset times
         hourly_reset_str = next_hourly_reset.strftime("%H:%M:%S") if next_hourly_reset else "متاح الآن"
         daily_reset_str = next_daily_reset.strftime("%H:%M:%S") if next_daily_reset else "متاح الآن"
@@ -336,7 +339,7 @@ class BotHandlers:
 /commands - عرض هذه القائمة
 /font_size - للتحكم بحجم الخط في المستندات
 • **حد الاستخدام اليومي:** 50 ملفاً في اليوم
-• **معالجة سريعة:** تحسينات في الأداء  
+• **معالجة سريعة:** تحسينات في الأداء
 • **سهولة الاستخدام:** بدون قيود اشتراك
 
 📄 **كيفية الاستخدام:**
@@ -444,6 +447,12 @@ class BotHandlers:
         user_id = update.effective_user.id
 
         try:
+            # Check if user is blocked
+            is_blocked, block_reason = await db_manager.is_user_blocked(user_id)
+            if is_blocked:
+                await update.message.reply_text(f"❌ تم حظرك من استخدام البوت\nالسبب: {block_reason}")
+                return
+
             # Check channel subscription first
             if not await self.check_channel_subscription(update, context):
                 return
@@ -664,10 +673,10 @@ class BotHandlers:
         """Update progress for callback query with real percentage and estimated time."""
         try:
             percentage = int((current / total) * 100) if total > 0 else 0
-            
+
             # Calculate estimated time
             estimated_time = self._calculate_estimated_time(current, total, status)
-            
+
             progress_text = f"""🔄 **جاري المعالجة...**
 
 📊 **التقدم:** {percentage}%
@@ -826,7 +835,7 @@ class BotHandlers:
         except Exception as e:
             logger.error(f"Error in error handler: {e}")
 
-    async def dev_api_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def dev_api_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Developer command to check the status of all configured API keys."""
         user = update.effective_user
         if not self.can_use_dev_commands(user.id):
@@ -849,7 +858,7 @@ class BotHandlers:
 
         await update.message.reply_text(status_message)
 
-    async def dev_add_key(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def dev_add_key_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Developer command to add a new API key."""
         user = update.effective_user
         if not self.can_use_dev_commands(user.id):
@@ -868,42 +877,197 @@ class BotHandlers:
         else:
             await update.message.reply_text("Failed to add API key. It might already exist or be invalid.")
 
-    async def dev_remove_key(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Developer command to remove an API key."""
-        user = update.effective_user
-        if not self.can_use_dev_commands(user.id):
-            await update.message.reply_text("❌ غير مصرح لك باستخدام هذا الأمر.")
-            return
+    async def dev_remove_key_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /dev_remove_key command - Remove an API key (developer only)."""
+        try:
+            user_id = update.effective_user.id
+            if user_id not in self.config.DEVELOPER_IDS:
+                await update.message.reply_text("❌ هذا الأمر مخصص للمطورين فقط")
+                return
 
-        if not context.args:
-            await update.message.reply_text("الاستخدام: /dev_remove_key <اسم_المفتاح_المراد_حذفه>")
-            return
+            if not context.args:
+                await update.message.reply_text("❌ يرجى تحديد اسم المفتاح\nمثال: `/dev_remove_key Secondary_2`")
+                return
 
-        key_to_remove = context.args[0]
-        if self.translator_manager.remove_key(key_to_remove):
-            # Update config with the removed key (this might need persistence)
-            if key_to_remove in self.config.GEMINI_API_KEYS:
-                self.config.GEMINI_API_KEYS.remove(key_to_remove)
-            await update.message.reply_text(f"API key {key_to_remove[:4]}...{key_to_remove[-4:]} removed successfully.")
-        else:
-            await update.message.reply_text("Failed to remove API key. Key not found.")
+            key_name = context.args[0]
+            success = multi_api_manager.remove_api_key(key_name)
+
+            if success:
+                await update.message.reply_text(f"✅ تم حذف المفتاح: {key_name}")
+            else:
+                await update.message.reply_text(f"❌ لم يتم العثور على المفتاح: {key_name}")
+
+        except Exception as e:
+            logger.error(f"Error in dev_remove_key command: {e}")
+            await update.message.reply_text(f"❌ خطأ: {str(e)}")
+
+    async def dev_db_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /dev_db_stats command - Show database statistics (developer only)."""
+        try:
+            user_id = update.effective_user.id
+            if user_id not in self.config.DEVELOPER_IDS:
+                await update.message.reply_text("❌ هذا الأمر مخصص للمطورين فقط")
+                return
+
+            stats = await db_manager.get_admin_statistics()
+
+            # Format API usage by service
+            api_usage_text = ""
+            for service in stats['api_usage_by_service']:
+                api_usage_text += f"• {service['api_service']}: {service['usage_count']} طلب (متوسط الاستجابة: {service['avg_response_time']:.1f}ms)\n"
+
+            # Format top users
+            top_users_text = ""
+            for user in stats['top_users'][:5]:
+                username = user['username'] or f"User_{user['user_id']}"
+                top_users_text += f"• {username}: {user['files_translated']} ملف\n"
+
+            message = f"""
+📊 **إحصائيات قاعدة البيانات**
+
+👥 **المستخدمون:**
+• إجمالي المسجلين: {stats['total_users']}
+• نشطون (24 ساعة): {stats['active_users_24h']}
+
+📝 **الترجمات (آخر 30 يوم):**
+• إجمالي الملفات: {stats['translation_stats'].get('total_translations', 0)}
+• إجمالي الأسطر: {stats['translation_stats'].get('total_lines', 0)}
+• متوسط وقت المعالجة: {stats['translation_stats'].get('avg_processing_time', 0):.1f}s
+
+🔧 **استخدام API (آخر 24 ساعة):**
+{api_usage_text or "لا توجد بيانات"}
+
+🏆 **أكثر المستخدمين نشاطاً:**
+{top_users_text or "لا توجد بيانات"}
+            """
+
+            await update.message.reply_text(message)
+
+        except Exception as e:
+            logger.error(f"Error in dev_db_stats command: {e}")
+            await update.message.reply_text(f"❌ خطأ: {str(e)}")
+
+    async def dev_user_info_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /dev_user_info command - Get detailed user information (developer only)."""
+        try:
+            user_id = update.effective_user.id
+            if user_id not in self.config.DEVELOPER_IDS:
+                await update.message.reply_text("❌ هذا الأمر مخصص للمطورين فقط")
+                return
+
+            if not context.args:
+                await update.message.reply_text("❌ يرجى تحديد معرف المستخدم\nمثال: `/dev_user_info 123456789`")
+                return
+
+            try:
+                target_user_id = int(context.args[0])
+            except ValueError:
+                await update.message.reply_text("❌ معرف المستخدم يجب أن يكون رقماً")
+                return
+
+            stats = await db_manager.get_user_statistics(target_user_id)
+
+            if not stats:
+                await update.message.reply_text("❌ المستخدم غير موجود في قاعدة البيانات")
+                return
+
+            user_info = stats['user_info']
+            translation_stats = stats['translation_stats']
+            rate_limits = stats['rate_limits']
+
+            message = f"""
+👤 **معلومات المستخدم {target_user_id}**
+
+📋 **البيانات الأساسية:**
+• الاسم: {user_info.get('first_name', '')} {user_info.get('last_name', '') or ''}
+• اسم المستخدم: @{user_info.get('username', 'غير محدد')}
+• تاريخ التسجيل: {user_info.get('created_at', '').strftime('%Y-%m-%d %H:%M') if user_info.get('created_at') else 'غير محدد'}
+• آخر نشاط: {user_info.get('last_activity', '').strftime('%Y-%m-%d %H:%M') if user_info.get('last_activity') else 'غير محدد'}
+
+📊 **إحصائيات الترجمة:**
+• إجمالي الملفات: {translation_stats.get('total_translations', 0)}
+• إجمالي الأسطر المترجمة: {translation_stats.get('total_lines_translated', 0)}
+• متوسط وقت المعالجة: {translation_stats.get('avg_processing_time', 0):.1f}s
+
+⏱️ **الحدود الحالية:**
+• استخدام ساعي: {rate_limits.get('hourly_count', 0)}/10
+• استخدام يومي: {rate_limits.get('daily_count', 0)}/50
+• الحالة: {'محظور' if rate_limits.get('is_blocked') else 'نشط'}
+            """
+
+            await update.message.reply_text(message)
+
+        except Exception as e:
+            logger.error(f"Error in dev_user_info command: {e}")
+            await update.message.reply_text(f"❌ خطأ: {str(e)}")
+
+    async def dev_block_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /dev_block_user command - Block a user (developer only)."""
+        try:
+            user_id = update.effective_user.id
+            if user_id not in self.config.DEVELOPER_IDS:
+                await update.message.reply_text("❌ هذا الأمر مخصص للمطورين فقط")
+                return
+
+            if len(context.args) < 2:
+                await update.message.reply_text("❌ يرجى تحديد معرف المستخدم والسبب\nمثال: `/dev_block_user 123456789 spam`")
+                return
+
+            try:
+                target_user_id = int(context.args[0])
+                reason = " ".join(context.args[1:])
+            except ValueError:
+                await update.message.reply_text("❌ معرف المستخدم يجب أن يكون رقماً")
+                return
+
+            await db_manager.block_user(target_user_id, reason, user_id)
+            await update.message.reply_text(f"✅ تم حظر المستخدم {target_user_id}\nالسبب: {reason}")
+
+        except Exception as e:
+            logger.error(f"Error in dev_block_user command: {e}")
+            await update.message.reply_text(f"❌ خطأ: {str(e)}")
+
+    async def dev_unblock_user_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /dev_unblock_user command - Unblock a user (developer only)."""
+        try:
+            user_id = update.effective_user.id
+            if user_id not in self.config.DEVELOPER_IDS:
+                await update.message.reply_text("❌ هذا الأمر مخصص للمطورين فقط")
+                return
+
+            if not context.args:
+                await update.message.reply_text("❌ يرجى تحديد معرف المستخدم\nمثال: `/dev_unblock_user 123456789`")
+                return
+
+            try:
+                target_user_id = int(context.args[0])
+            except ValueError:
+                await update.message.reply_text("❌ معرف المستخدم يجب أن يكون رقماً")
+                return
+
+            await db_manager.unblock_user(target_user_id, user_id)
+            await update.message.reply_text(f"✅ تم إلغاء حظر المستخدم {target_user_id}")
+
+        except Exception as e:
+            logger.error(f"Error in dev_unblock_user command: {e}")
+            await update.message.reply_text(f"❌ خطأ: {str(e)}")
 
     def is_bot_owner(self, user_id: int) -> bool:
         """Check if the user is the bot owner."""
         return user_id == self.config.BOT_OWNER_ID
-    
+
     def is_admin(self, user_id: int) -> bool:
         """Check if the user is an admin."""
         return user_id in self.config.ADMIN_IDS
-    
+
     def is_developer(self, user_id: int) -> bool:
         """Check if the user is a developer."""
         return user_id in self.config.DEVELOPER_IDS
-    
+
     def can_use_dev_commands(self, user_id: int) -> bool:
         """Check if user can use developer commands."""
         return self.is_bot_owner(user_id) or self.is_developer(user_id)
-    
+
     def can_view_all_users(self, user_id: int) -> bool:
         """Check if user can view all users status."""
         return self.is_bot_owner(user_id) or self.is_admin(user_id)
@@ -935,6 +1099,10 @@ def register_handlers(application):
     application.add_error_handler(bot_handlers.error_handler)
 
     # Developer commands
-    application.add_handler(CommandHandler("dev_api_status", bot_handlers.dev_api_status))
-    application.add_handler(CommandHandler("dev_add_key", bot_handlers.dev_add_key))
-    application.add_handler(CommandHandler("dev_remove_key", bot_handlers.dev_remove_key))
+    application.add_handler(CommandHandler("dev_api_status", bot_handlers.dev_api_status_command))
+    application.add_handler(CommandHandler("dev_add_key", bot_handlers.dev_add_key_command))
+    application.add_handler(CommandHandler("dev_remove_key", bot_handlers.dev_remove_key_command))
+    application.add_handler(CommandHandler("dev_db_stats", bot_handlers.dev_db_stats_command))
+    application.add_handler(CommandHandler("dev_user_info", bot_handlers.dev_user_info_command))
+    application.add_handler(CommandHandler("dev_block_user", bot_handlers.dev_block_user_command))
+    application.add_handler(CommandHandler("dev_unblock_user", bot_handlers.dev_unblock_user_command))

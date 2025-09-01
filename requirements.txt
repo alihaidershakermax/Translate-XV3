@@ -19,3 +19,7 @@ reportlab
 telegram
 groq
 groq
+asyncpg
+psycopg2-binary
+asyncpg
+psycopg2-binary

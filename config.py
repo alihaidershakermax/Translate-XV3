@@ -49,6 +49,9 @@ class Config:
         # Channel settings (disabled - no mandatory subscription)
         self.CHANNEL_USERNAME = None  # Mandatory subscription disabled
         
+        # Database configuration
+        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgres://koi:oU1-vG4+vO4+hU4=oJ4+@asia-east1-001.proxy.kinsta.app:30318/teenage-aqua-reptile")
+        
         # Logging
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     

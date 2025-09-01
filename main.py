@@ -14,6 +14,7 @@ from telegram.ext import Application
 
 from config import Config
 from bot_handlers import register_handlers
+from database_manager import db_manager
 
 # Configure logging
 logging.basicConfig(
@@ -70,6 +71,10 @@ async def main():
         if not config.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable is required")
 
+        # Initialize database
+        await db_manager.initialize()
+        logger.info("Database connection established")
+
         # Create bot application
         application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
@@ -109,6 +114,7 @@ async def main():
                     await application.updater.stop()
                 await application.stop()
                 await application.shutdown()
+                await db_manager.close()
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
 
