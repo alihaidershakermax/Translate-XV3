@@ -151,12 +151,17 @@ class MultiGeminiTranslatorManager:
             multi_api_manager.add_api_key(key, f"Config_Key_{i+1}")
     
     async def translate_single_line(self, text: str) -> str:
-        """ترجمة سطر واحد"""
+        """ترجمة سطر واحد - محسّن للأداء"""
         if not text or text.strip() == "":
             return ""
+        
+        # Skip very short or non-meaningful text
+        clean_text = text.strip()
+        if len(clean_text) < 2 or clean_text.isdigit():
+            return clean_text
             
         async with self.semaphore:
-            max_retries = 3
+            max_retries = 2  # Reduced retries for single lines
             for attempt in range(max_retries):
                 try:
                     api_key = multi_api_manager.get_current_api_key()
@@ -166,13 +171,12 @@ class MultiGeminiTranslatorManager:
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(self.model)
                     
-                    prompt = f"""Translate the following English text to Arabic. Only return the Arabic translation, nothing else:
-
-{text}"""
+                    # Shorter, more efficient prompt
+                    prompt = f"Translate to Arabic: {clean_text}"
                     
                     response = await asyncio.wait_for(
                         asyncio.to_thread(model.generate_content, prompt),
-                        timeout=30
+                        timeout=20  # Reduced timeout for single lines
                     )
                     
                     if response and response.text:
@@ -189,29 +193,151 @@ class MultiGeminiTranslatorManager:
                     else:
                         logger.warning(f"Translation attempt {attempt + 1} failed: {e}")
                         if attempt == max_retries - 1:
-                            raise e
+                            return clean_text  # Return original instead of raising error
+                    
+                    await asyncio.sleep(0.5)  # Shorter delay
+            
+            return clean_text  # Return original if all attempts fail
+    
+    async def translate_lines_with_progress(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
+        """ترجمة عدة أسطر مع تحديث التقدم - إصدار محسّن للدفعات"""
+        # Use batch translation for better API efficiency
+        return await self.translate_batch_with_progress(lines, progress_callback)
+    
+    async def translate_batch_with_progress(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
+        """ترجمة النص كدفعة واحدة لتقليل استهلاك API"""
+        if not lines:
+            return []
+        
+        try:
+            if progress_callback:
+                await progress_callback(0, 100, "تحضير النص للترجمة")
+            
+            # Prepare the batch text with numbering
+            batch_text = ""
+            for i, line in enumerate(lines):
+                if line.strip():  # Skip empty lines
+                    batch_text += f"{i+1}. {line.strip()}\n"
+            
+            if progress_callback:
+                await progress_callback(20, 100, "إرسال النص للذكاء الاصطناعي")
+            
+            # Send the entire batch to API
+            max_retries = 3
+            translated_text = None
+            
+            for attempt in range(max_retries):
+                try:
+                    api_key = multi_api_manager.get_current_api_key()
+                    if not api_key:
+                        raise Exception("لا توجد مفاتيح API متاحة")
+                    
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(self.model)
+                    
+                    prompt = f"""Translate the following numbered English lines to Arabic. 
+Keep the exact same numbering format and return only the Arabic translations with their numbers:
+
+{batch_text}
+
+Important: Keep the same line numbers (1., 2., 3., etc.) and translate only the text content."""
+                    
+                    if progress_callback:
+                        await progress_callback(40 + (attempt * 20), 100, f"محاولة ترجمة رقم {attempt + 1}")
+                    
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(model.generate_content, prompt),
+                        timeout=60  # Increased timeout for batch processing
+                    )
+                    
+                    if response and response.text:
+                        translated_text = response.text.strip()
+                        break
+                    else:
+                        raise Exception("No response from API")
+                        
+                except Exception as e:
+                    error_str = str(e)
+                    if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
+                        multi_api_manager.mark_key_failed(api_key, "Quota exceeded")
+                        if attempt == max_retries - 1:
+                            raise Exception("تم تجاوز حصة الترجمة لجميع المفاتيح")
+                    else:
+                        logger.warning(f"Batch translation attempt {attempt + 1} failed: {e}")
+                        if attempt == max_retries - 1:
+                            # Fallback to line-by-line translation
+                            return await self.translate_lines_fallback(lines, progress_callback)
                     
                     await asyncio.sleep(1)
             
-            return text  # Return original if all attempts fail
+            if progress_callback:
+                await progress_callback(80, 100, "معالجة النص المترجم")
+            
+            # Parse the translated response
+            translated_pairs = self._parse_batch_translation(lines, translated_text)
+            
+            if progress_callback:
+                await progress_callback(100, 100, "اكتملت الترجمة")
+            
+            return translated_pairs
+            
+        except Exception as e:
+            logger.error(f"Batch translation failed: {e}")
+            # Fallback to line-by-line translation
+            return await self.translate_lines_fallback(lines, progress_callback)
     
-    async def translate_lines_with_progress(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
-        """ترجمة عدة أسطر مع تحديث التقدم"""
+    def _parse_batch_translation(self, original_lines: List[str], translated_text: str) -> List[Tuple[str, str]]:
+        """تحليل النص المترجم وإقرانه بالنص الأصلي"""
+        translated_pairs = []
+        translated_lines = translated_text.split('\n')
+        
+        # Create a mapping from line numbers to translations
+        translation_map = {}
+        for line in translated_lines:
+            line = line.strip()
+            if line and '. ' in line:
+                try:
+                    # Extract number and translation
+                    parts = line.split('. ', 1)
+                    if len(parts) == 2:
+                        line_num = int(parts[0])
+                        translation = parts[1].strip()
+                        translation_map[line_num - 1] = translation  # Convert to 0-based index
+                except (ValueError, IndexError):
+                    continue
+        
+        # Match original lines with translations
+        for i, original_line in enumerate(original_lines):
+            if original_line.strip():  # Non-empty line
+                if i in translation_map:
+                    translated_pairs.append((original_line, translation_map[i]))
+                else:
+                    # If translation not found, keep original
+                    translated_pairs.append((original_line, original_line))
+            else:
+                # Empty line
+                translated_pairs.append((original_line, ""))
+        
+        return translated_pairs
+    
+    async def translate_lines_fallback(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
+        """طريقة احتياطية - ترجمة سطر بسطر (النظام القديم)"""
+        logger.info("Using fallback line-by-line translation")
         translated_pairs = []
         
         for i, line in enumerate(lines):
             if progress_callback:
-                await progress_callback(i, len(lines), f"ترجمة السطر {i+1}")
+                await progress_callback(i, len(lines), f"ترجمة السطر {i+1} (نظام احتياطي)")
             
             translated = await self.translate_single_line(line)
             translated_pairs.append((line, translated))
             
             # Small delay to avoid overwhelming the API
-            if i % 5 == 0 and i > 0:
-                await asyncio.sleep(0.2)
+            if i % 3 == 0 and i > 0:
+                await asyncio.sleep(0.3)
         
         if progress_callback:
-            await progress_callback(len(lines), len(lines), "اكتملت الترجمة")
+            await progress_callback(len(lines), len(lines), "اكتملت الترجمة (نظام احتياطي)")
         
         return translated_pairs
     
