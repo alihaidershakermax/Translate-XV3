@@ -18,7 +18,7 @@ class DatabaseManager:
     """مدير قاعدة البيانات PostgreSQL"""
     
     def __init__(self, database_url: str = None):
-        self.database_url = database_url or "postgres://koi:oU1-vG4+vO4+hU4=oJ4+@asia-east1-001.proxy.kinsta.app:30318/teenage-aqua-reptile"
+        self.database_url = database_url or os.getenv("DATABASE_URL", "postgres://koi:oU1-vG4+vO4+hU4=oJ4+@asia-east1-001.proxy.kinsta.app:30318/teenage-aqua-reptile")
         self.pool = None
         
     async def initialize(self):
