@@ -401,11 +401,15 @@ class LocalTranslator:
             logger.warning(f"خطأ في تحميل القاموس المحلي: {e}")
     
     async def translate_text(self, text: str) -> str:
-        """ترجمة النص باستخدام القاموس المحلي"""
+        """ترجمة النص باستخدام القاموس المحلي مع الحفاظ على الرموز الرياضية"""
         if not text or not text.strip():
             return text
             
         try:
+            # فحص وجود رموز رياضية
+            if self._contains_math(text):
+                return await self._translate_with_math_preservation(text)
+            
             original_text = text.strip()
             lower_text = original_text.lower()
             
@@ -435,6 +439,83 @@ class LocalTranslator:
         except Exception as e:
             logger.error(f"خطأ في الترجمة المحلية: {e}")
             return text
+
+    def _contains_math(self, text: str) -> bool:
+        """فحص وجود رموز رياضية في النص"""
+        import re
+        math_patterns = [
+            r'\$.*?\$',  # LaTeX math
+            r'\\[a-zA-Z]+',  # LaTeX commands
+            r'[=∫∑∏∆∇±≤≥≠∞∪∩⊂⊃∈∉∀∃]',  # رموز رياضية
+            r'\b\d+[+\-*/=]\d+',  # معادلات أساسية
+            r'[xyz]\s*[=+\-*/]\s*\d+',  # متغيرات مع عمليات
+            r'\b(sin|cos|tan|log|ln|exp|sqrt)\(',  # دوال رياضية
+        ]
+        
+        return any(re.search(pattern, text) for pattern in math_patterns)
+
+    async def _translate_with_math_preservation(self, text: str) -> str:
+        """ترجمة النص مع الحفاظ على الرموز الرياضية"""
+        import re
+        
+        # استخراج الرموز الرياضية
+        math_expressions = {}
+        modified_text = text
+        placeholder_counter = 0
+        
+        # أنماط الرموز الرياضية
+        patterns = [
+            (r'\$[^$]+\$', 'LATEX_MATH'),
+            (r'\$\$[^$]+\$\$', 'LATEX_BLOCK'),
+            (r'\\[a-zA-Z]+\{[^}]*\}', 'LATEX_CMD'),
+            (r'\b\d+\s*[+\-*/=×÷]\s*\d+(?:\s*[+\-*/=×÷]\s*\d+)*', 'EQUATION'),
+            (r'[xyz]\s*[=+\-*/]\s*[\d\w\s+\-*/]+', 'ALGEBRA'),
+        ]
+        
+        for pattern, expr_type in patterns:
+            matches = re.finditer(pattern, modified_text)
+            for match in matches:
+                placeholder = f"__MATH_EXPR_{placeholder_counter}__"
+                math_expressions[placeholder] = match.group()
+                modified_text = modified_text.replace(match.group(), placeholder, 1)
+                placeholder_counter += 1
+        
+        # ترجمة النص بدون الرموز الرياضية
+        translated_text = await self.translate_text_basic(modified_text)
+        
+        # إعادة الرموز الرياضية
+        for placeholder, original_expr in math_expressions.items():
+            translated_text = translated_text.replace(placeholder, original_expr)
+        
+        return translated_text
+
+    async def translate_text_basic(self, text: str) -> str:
+        """ترجمة النص الأساسية بدون رموز رياضية"""
+        original_text = text.strip()
+        lower_text = original_text.lower()
+        
+        # البحث في عبارات كاملة أولاً
+        for phrase, translation in self.phrase_dictionary.items():
+            if phrase in lower_text:
+                lower_text = lower_text.replace(phrase, translation)
+        
+        # ترجمة كلمة بكلمة
+        words = lower_text.split()
+        translated_words = []
+        
+        for word in words:
+            # إزالة علامات الترقيم
+            clean_word = word.strip('.,!?;:"()[]{}').lower()
+            
+            if clean_word in self.dictionary:
+                # الاحتفاظ بعلامات الترقيم
+                punctuation = word[len(clean_word):]
+                translated_words.append(self.dictionary[clean_word] + punctuation)
+            else:
+                # إذا لم توجد ترجمة، احتفظ بالكلمة الأصلية
+                translated_words.append(word)
+        
+        return " ".join(translated_words)
     
     async def translate_lines(self, lines: List[str]) -> List[Tuple[str, str]]:
         """ترجمة عدة أسطر باستخدام القاموس المحلي"""

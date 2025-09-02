@@ -199,9 +199,9 @@ class WordDocumentGenerator:
         original_text: str,
         translated_text: str
     ):
-        """Add a translation pair to the document in the requested format."""
+        """Add a translation pair to the document with proper paragraph formatting."""
         try:
-            # Add English text first (left aligned, normal formatting)
+            # Add English text paragraph (preserving original structure)
             english_para = doc.add_paragraph()
             english_run = english_para.add_run(original_text)
             english_run.font.name = 'Arial'
@@ -209,19 +209,18 @@ class WordDocumentGenerator:
             english_run.font.color.rgb = RGBColor(0, 0, 0)
             english_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-            # Clean translated text
+            # Clean translated text (preserve math symbols and structure)
             clean_arabic = self._clean_arabic_translation(translated_text)
 
-            # Add Arabic translation directly below (left aligned, normal formatting - not right aligned)
+            # Add Arabic translation paragraph directly below
             arabic_para = doc.add_paragraph()
             arabic_run = arabic_para.add_run(clean_arabic)
             arabic_run.font.name = 'Arial Unicode MS'
             arabic_run.font.size = Pt(ui_config.current_arabic_font_size)
             arabic_run.font.color.rgb = RGBColor(0, 0, 0)
-            # Keep left alignment for Arabic text as requested
-            arabic_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            arabic_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT  # Right align for Arabic
 
-            # Add simple spacing between translation pairs
+            # Add spacing between translation blocks
             doc.add_paragraph()
 
         except Exception as e:
@@ -231,7 +230,7 @@ class WordDocumentGenerator:
             fallback_para = doc.add_paragraph(f"{original_text}")
             fallback_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
             fallback_para2 = doc.add_paragraph(f"{clean_arabic}")
-            fallback_para2.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            fallback_para2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
     def _set_rtl_alignment(self, paragraph):
         """Set right-to-left alignment for Arabic text."""
@@ -251,7 +250,7 @@ class WordDocumentGenerator:
             paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
     def _clean_arabic_translation(self, arabic_text: str) -> str:
-        """Clean Arabic translation while preserving existing numbers in content."""
+        """Clean Arabic translation while preserving math expressions and symbols."""
         import re
 
         # Only remove leading numbering added by translation (like "1-", "2.", "3)" at the beginning)
@@ -263,7 +262,10 @@ class WordDocumentGenerator:
         # Remove any remaining leading/trailing whitespace
         text = text.strip()
 
-        # Keep all other numbers that are part of the actual content
+        # Preserve mathematical expressions and symbols
+        # Keep equations, formulas, variables, and mathematical notation intact
+        # This includes: equations (x=y), functions (sin, cos), symbols (∑, ∫, etc.)
+        
         return text
 
     def create_error_document(self, error_message: str, output_path: Path) -> Path:
