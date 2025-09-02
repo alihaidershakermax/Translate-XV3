@@ -1,5 +1,5 @@
-motor
-pymongo
+asyncpg
+psycopg2-binary
 python-telegram-bot==22.3
 python-docx==1.2.0
 google-generativeai

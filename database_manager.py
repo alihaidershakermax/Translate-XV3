@@ -1,465 +1,474 @@
 """
-MongoDB Database Manager
+PostgreSQL Database Manager
 إدارة قاعدة البيانات لتخزين إحصائيات الاستخدام والمستخدمين
 """
 
 import asyncio
+import asyncpg
 import logging
 import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import os
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import MongoClient
-import urllib.parse
 
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    """مدير قاعدة البيانات MongoDB"""
+    """مدير قاعدة البيانات PostgreSQL"""
     
     def __init__(self, database_url: str = None):
-        self.database_url = database_url or os.getenv("DATABASE_URL", "mongodb://localhost:27017/telegram_bot")
-        self.client = None
-        self.db = None
+        self.database_url = database_url or os.getenv("DATABASE_URL", "postgres://mammal:vA2_oE4_iM7_qI2_gY1-@asia-east1-001.proxy.kinsta.app:30525/trnsalnat")
+        self.pool = None
         
     async def initialize(self):
         """تهيئة اتصال قاعدة البيانات وإنشاء الجداول"""
         try:
-            # Create MongoDB client
-            self.client = AsyncIOMotorClient(self.database_url)
-            self.db = self.client.get_default_database()
+            # Create connection pool
+            self.pool = await asyncpg.create_pool(
+                self.database_url,
+                min_size=1,
+                max_size=10,
+                command_timeout=60
+            )
             
-            # Create indexes if they don't exist
-            await self._create_indexes()
-            logger.info("MongoDB initialized successfully")
+            # Create tables if they don't exist
+            await self._create_tables()
+            logger.info("Database initialized successfully")
             
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
             raise
     
-    async def _create_indexes(self):
-        """إنشاء فهارس قاعدة البيانات"""
-        # Users collection indexes
-        await self.db.users.create_index("user_id", unique=True)
-        await self.db.users.create_index("username")
-        await self.db.users.create_index("last_activity")
-        
-        # Translation history indexes
-        await self.db.translation_history.create_index("user_id")
-        await self.db.translation_history.create_index("created_at")
-        await self.db.translation_history.create_index([("user_id", 1), ("created_at", -1)])
-        
-        # API usage indexes
-        await self.db.api_usage.create_index("user_id")
-        await self.db.api_usage.create_index("created_at")
-        await self.db.api_usage.create_index("api_service")
-        
-        # Rate limits indexes
-        await self.db.rate_limits.create_index("user_id", unique=True)
-        
-        logger.info("Database indexes created successfully")
+    async def _create_tables(self):
+        """إنشاء جداول قاعدة البيانات"""
+        async with self.pool.acquire() as conn:
+            # Users table
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username VARCHAR(255),
+                    first_name VARCHAR(255),
+                    last_name VARCHAR(255),
+                    language_code VARCHAR(10),
+                    is_bot BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    total_files_processed INTEGER DEFAULT 0,
+                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Translation history table
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS translation_history (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id),
+                    file_name VARCHAR(500),
+                    file_size BIGINT,
+                    file_type VARCHAR(50),
+                    lines_count INTEGER,
+                    processing_time_seconds REAL,
+                    api_service VARCHAR(50),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status VARCHAR(50) DEFAULT 'completed'
+                )
+            ''')
+            
+            # API usage statistics
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS api_usage (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id),
+                    api_service VARCHAR(50),
+                    request_type VARCHAR(100),
+                    tokens_used INTEGER DEFAULT 0,
+                    cost_estimate REAL DEFAULT 0.0,
+                    response_time_ms INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status VARCHAR(50) DEFAULT 'success'
+                )
+            ''')
+            
+            # Rate limiting table
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS rate_limits (
+                    user_id BIGINT PRIMARY KEY,
+                    hourly_count INTEGER DEFAULT 0,
+                    daily_count INTEGER DEFAULT 0,
+                    weekly_count INTEGER DEFAULT 0,
+                    last_hourly_reset TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_daily_reset TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_weekly_reset TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_blocked BOOLEAN DEFAULT FALSE,
+                    block_reason VARCHAR(500),
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Bot settings table
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key VARCHAR(255) PRIMARY KEY,
+                    value TEXT,
+                    description TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_by BIGINT
+                )
+            ''')
+            
+            logger.info("Database tables created/verified successfully")
     
     async def get_or_create_user(self, user_id: int, user_data: Dict) -> Dict:
         """الحصول على المستخدم أو إنشاؤه إذا لم يكن موجوداً"""
-        # Try to get existing user
-        user = await self.db.users.find_one({"user_id": user_id})
-        
-        if user:
-            # Update user activity
-            await self.db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"last_activity": datetime.now(), "updated_at": datetime.now()}}
+        async with self.pool.acquire() as conn:
+            # Try to get existing user
+            user = await conn.fetchrow(
+                "SELECT * FROM users WHERE user_id = $1", user_id
             )
-            return user
-        else:
-            # Create new user document
-            user_doc = {
-                "user_id": user_id,
-                "username": user_data.get('username'),
-                "first_name": user_data.get('first_name'),
-                "last_name": user_data.get('last_name'),
-                "language_code": user_data.get('language_code'),
-                "is_bot": user_data.get('is_bot', False),
-                "created_at": datetime.now(),
-                "updated_at": datetime.now(),
-                "is_active": True,
-                "total_files_processed": 0,
-                "last_activity": datetime.now()
-            }
             
-            await self.db.users.insert_one(user_doc)
-            logger.info(f"Created new user: {user_id}")
-            return user_doc
+            if user:
+                # Update user activity
+                await conn.execute(
+                    "UPDATE users SET last_activity = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1",
+                    user_id
+                )
+                return dict(user)
+            else:
+                # Create new user
+                await conn.execute('''
+                    INSERT INTO users (user_id, username, first_name, last_name, language_code)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        username = EXCLUDED.username,
+                        first_name = EXCLUDED.first_name,
+                        last_name = EXCLUDED.last_name,
+                        language_code = EXCLUDED.language_code,
+                        updated_at = CURRENT_TIMESTAMP
+                ''', user_id, user_data.get('username'), user_data.get('first_name'), 
+                     user_data.get('last_name'), user_data.get('language_code'))
+                
+                # Get the created user
+                user = await conn.fetchrow(
+                    "SELECT * FROM users WHERE user_id = $1", user_id
+                )
+                logger.info(f"Created new user: {user_id}")
+                return dict(user)
     
     async def record_translation(self, user_id: int, file_name: str, file_size: int, 
                                file_type: str, lines_count: int, processing_time: float,
-                               api_service: str = "gemini") -> str:
+                               api_service: str = "gemini") -> int:
         """تسجيل عملية ترجمة في قاعدة البيانات"""
-        # Record translation
-        translation_doc = {
-            "user_id": user_id,
-            "file_name": file_name,
-            "file_size": file_size,
-            "file_type": file_type,
-            "lines_count": lines_count,
-            "processing_time_seconds": processing_time,
-            "api_service": api_service,
-            "created_at": datetime.now(),
-            "status": "completed"
-        }
-        
-        result = await self.db.translation_history.insert_one(translation_doc)
-        
-        # Update user stats
-        await self.db.users.update_one(
-            {"user_id": user_id},
-            {
-                "$inc": {"total_files_processed": 1},
-                "$set": {"last_activity": datetime.now(), "updated_at": datetime.now()}
-            }
-        )
-        
-        return str(result.inserted_id)
+        async with self.pool.acquire() as conn:
+            # Record translation
+            translation_id = await conn.fetchval('''
+                INSERT INTO translation_history 
+                (user_id, file_name, file_size, file_type, lines_count, processing_time_seconds, api_service)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id
+            ''', user_id, file_name, file_size, file_type, lines_count, processing_time, api_service)
+            
+            # Update user stats
+            await conn.execute('''
+                UPDATE users SET 
+                    total_files_processed = total_files_processed + 1,
+                    last_activity = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = $1
+            ''', user_id)
+            
+            return translation_id
     
     async def record_api_usage(self, user_id: int, api_service: str, request_type: str,
                               tokens_used: int = 0, response_time_ms: int = 0,
                               status: str = "success") -> None:
         """تسجيل استخدام API"""
-        api_usage_doc = {
-            "user_id": user_id,
-            "api_service": api_service,
-            "request_type": request_type,
-            "tokens_used": tokens_used,
-            "response_time_ms": response_time_ms,
-            "status": status,
-            "created_at": datetime.now()
-        }
-        
-        await self.db.api_usage.insert_one(api_usage_doc)
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO api_usage 
+                (user_id, api_service, request_type, tokens_used, response_time_ms, status)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            ''', user_id, api_service, request_type, tokens_used, response_time_ms, status)
     
     async def get_user_rate_limits(self, user_id: int) -> Dict:
         """الحصول على حدود المعدل للمستخدم"""
-        # Get or create rate limit record
-        rate_limit = await self.db.rate_limits.find_one({"user_id": user_id})
-        
-        if not rate_limit:
-            # Create new rate limit record
-            rate_limit_doc = {
-                "user_id": user_id,
-                "hourly_count": 0,
-                "daily_count": 0,
-                "weekly_count": 0,
-                "last_hourly_reset": datetime.now(),
-                "last_daily_reset": datetime.now(),
-                "last_weekly_reset": datetime.now(),
-                "is_blocked": False,
-                "block_reason": None,
-                "updated_at": datetime.now()
-            }
+        async with self.pool.acquire() as conn:
+            # Get or create rate limit record
+            rate_limit = await conn.fetchrow(
+                "SELECT * FROM rate_limits WHERE user_id = $1", user_id
+            )
             
-            await self.db.rate_limits.insert_one(rate_limit_doc)
-            rate_limit = rate_limit_doc
-        
-        # Check if resets are needed
-        now = datetime.now()
-        rate_limit_updated = False
-        
-        # Reset hourly count if needed
-        if now - rate_limit['last_hourly_reset'] >= timedelta(hours=1):
-            await self.db.rate_limits.update_one(
-                {"user_id": user_id},
-                {"$set": {"hourly_count": 0, "last_hourly_reset": datetime.now()}}
-            )
-            rate_limit['hourly_count'] = 0
-            rate_limit_updated = True
-        
-        # Reset daily count if needed
-        if now - rate_limit['last_daily_reset'] >= timedelta(days=1):
-            await self.db.rate_limits.update_one(
-                {"user_id": user_id},
-                {"$set": {"daily_count": 0, "last_daily_reset": datetime.now()}}
-            )
-            rate_limit['daily_count'] = 0
-            rate_limit_updated = True
-        
-        # Reset weekly count if needed
-        if now - rate_limit['last_weekly_reset'] >= timedelta(weeks=1):
-            await self.db.rate_limits.update_one(
-                {"user_id": user_id},
-                {"$set": {"weekly_count": 0, "last_weekly_reset": datetime.now()}}
-            )
-            rate_limit['weekly_count'] = 0
-            rate_limit_updated = True
-        
-        if rate_limit_updated:
-            # Refresh the document after updates
-            rate_limit = await self.db.rate_limits.find_one({"user_id": user_id})
-        
-        return rate_limit
+            if not rate_limit:
+                # Create new rate limit record
+                await conn.execute('''
+                    INSERT INTO rate_limits (user_id) VALUES ($1)
+                ''', user_id)
+                
+                rate_limit = await conn.fetchrow(
+                    "SELECT * FROM rate_limits WHERE user_id = $1", user_id
+                )
+            
+            # Check if resets are needed
+            now = datetime.now()
+            rate_limit_dict = dict(rate_limit)
+            
+            # Reset hourly count if needed
+            if now - rate_limit['last_hourly_reset'] >= timedelta(hours=1):
+                await conn.execute('''
+                    UPDATE rate_limits SET 
+                        hourly_count = 0, 
+                        last_hourly_reset = CURRENT_TIMESTAMP
+                    WHERE user_id = $1
+                ''', user_id)
+                rate_limit_dict['hourly_count'] = 0
+            
+            # Reset daily count if needed
+            if now - rate_limit['last_daily_reset'] >= timedelta(days=1):
+                await conn.execute('''
+                    UPDATE rate_limits SET 
+                        daily_count = 0, 
+                        last_daily_reset = CURRENT_TIMESTAMP
+                    WHERE user_id = $1
+                ''', user_id)
+                rate_limit_dict['daily_count'] = 0
+            
+            # Reset weekly count if needed
+            if now - rate_limit['last_weekly_reset'] >= timedelta(weeks=1):
+                await conn.execute('''
+                    UPDATE rate_limits SET 
+                        weekly_count = 0, 
+                        last_weekly_reset = CURRENT_TIMESTAMP
+                    WHERE user_id = $1
+                ''', user_id)
+                rate_limit_dict['weekly_count'] = 0
+            
+            return rate_limit_dict
     
     async def update_rate_limits(self, user_id: int) -> None:
         """تحديث حدود المعدل بعد معالجة ملف"""
-        await self.db.rate_limits.update_one(
-            {"user_id": user_id},
-            {
-                "$inc": {
-                    "hourly_count": 1,
-                    "daily_count": 1,
-                    "weekly_count": 1
-                },
-                "$set": {"updated_at": datetime.now()}
-            }
-        )
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE rate_limits SET 
+                    hourly_count = hourly_count + 1,
+                    daily_count = daily_count + 1,
+                    weekly_count = weekly_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = $1
+            ''', user_id)
     
     async def get_user_statistics(self, user_id: int) -> Dict:
         """الحصول على إحصائيات المستخدم"""
-        # Get user info
-        user = await self.db.users.find_one({"user_id": user_id})
-        
-        if not user:
-            return {}
-        
-        # Get translation statistics
-        translation_pipeline = [
-            {"$match": {"user_id": user_id}},
-            {
-                "$group": {
-                    "_id": None,
-                    "total_translations": {"$sum": 1},
-                    "total_lines_translated": {"$sum": "$lines_count"},
-                    "avg_processing_time": {"$avg": "$processing_time_seconds"}
-                }
+        async with self.pool.acquire() as conn:
+            # Get user info
+            user = await conn.fetchrow(
+                "SELECT * FROM users WHERE user_id = $1", user_id
+            )
+            
+            if not user:
+                return {}
+            
+            # Get translation statistics
+            translation_stats = await conn.fetchrow('''
+                SELECT 
+                    COUNT(*) as total_translations,
+                    SUM(lines_count) as total_lines_translated,
+                    AVG(processing_time_seconds) as avg_processing_time,
+                    MAX(created_at) as last_translation
+                FROM translation_history 
+                WHERE user_id = $1
+            ''', user_id)
+            
+            # Get API usage statistics
+            api_stats = await conn.fetchrow('''
+                SELECT 
+                    COUNT(*) as total_api_calls,
+                    SUM(tokens_used) as total_tokens,
+                    AVG(response_time_ms) as avg_response_time
+                FROM api_usage 
+                WHERE user_id = $1
+            ''', user_id)
+            
+            # Get rate limits
+            rate_limits = await self.get_user_rate_limits(user_id)
+            
+            return {
+                'user_info': dict(user),
+                'translation_stats': dict(translation_stats) if translation_stats else {},
+                'api_stats': dict(api_stats) if api_stats else {},
+                'rate_limits': rate_limits
             }
-        ]
-        
-        translation_stats_cursor = self.db.translation_history.aggregate(translation_pipeline)
-        translation_stats_list = await translation_stats_cursor.to_list(length=1)
-        translation_stats = translation_stats_list[0] if translation_stats_list else {}
-        
-        # Get API usage statistics
-        api_pipeline = [
-            {"$match": {"user_id": user_id}},
-            {
-                "$group": {
-                    "_id": None,
-                    "total_api_calls": {"$sum": 1},
-                    "total_tokens": {"$sum": "$tokens_used"},
-                    "avg_response_time": {"$avg": "$response_time_ms"}
-                }
-            }
-        ]
-        
-        api_stats_cursor = self.db.api_usage.aggregate(api_pipeline)
-        api_stats_list = await api_stats_cursor.to_list(length=1)
-        api_stats = api_stats_list[0] if api_stats_list else {}
-        
-        # Get rate limits
-        rate_limits = await self.get_user_rate_limits(user_id)
-        
-        # Get last translation
-        last_translation = await self.db.translation_history.find_one(
-            {"user_id": user_id},
-            sort=[("created_at", -1)]
-        )
-        
-        if translation_stats:
-            translation_stats["last_translation"] = last_translation["created_at"] if last_translation else None
-        
-        return {
-            'user_info': user,
-            'translation_stats': translation_stats,
-            'api_stats': api_stats,
-            'rate_limits': rate_limits
-        }
     
     async def get_admin_statistics(self) -> Dict:
         """الحصول على إحصائيات عامة للإدارة"""
-        # Total users
-        total_users = await self.db.users.count_documents({})
-        
-        # Active users (last 24 hours)
-        twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
-        active_users = await self.db.users.count_documents({
-            "last_activity": {"$gte": twenty_four_hours_ago}
-        })
-        
-        # Translation statistics (last 30 days)
-        thirty_days_ago = datetime.now() - timedelta(days=30)
-        translation_pipeline = [
-            {"$match": {"created_at": {"$gte": thirty_days_ago}}},
-            {
-                "$group": {
-                    "_id": None,
-                    "total_translations": {"$sum": 1},
-                    "total_lines": {"$sum": "$lines_count"},
-                    "avg_processing_time": {"$avg": "$processing_time_seconds"}
-                }
+        async with self.pool.acquire() as conn:
+            # Total users
+            total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+            
+            # Active users (last 24 hours)
+            active_users = await conn.fetchval('''
+                SELECT COUNT(*) FROM users 
+                WHERE last_activity >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            ''')
+            
+            # Translation statistics
+            translation_stats = await conn.fetchrow('''
+                SELECT 
+                    COUNT(*) as total_translations,
+                    SUM(lines_count) as total_lines,
+                    AVG(processing_time_seconds) as avg_processing_time
+                FROM translation_history
+                WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+            ''')
+            
+            # API usage by service
+            api_usage_by_service = await conn.fetch('''
+                SELECT 
+                    api_service,
+                    COUNT(*) as usage_count,
+                    AVG(response_time_ms) as avg_response_time
+                FROM api_usage
+                WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                GROUP BY api_service
+            ''')
+            
+            # Top users
+            top_users = await conn.fetch('''
+                SELECT 
+                    u.user_id,
+                    u.username,
+                    u.first_name,
+                    COUNT(th.id) as files_translated
+                FROM users u
+                LEFT JOIN translation_history th ON u.user_id = th.user_id
+                WHERE th.created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+                GROUP BY u.user_id, u.username, u.first_name
+                ORDER BY files_translated DESC
+                LIMIT 10
+            ''')
+            
+            return {
+                'total_users': total_users,
+                'active_users_24h': active_users,
+                'translation_stats': dict(translation_stats) if translation_stats else {},
+                'api_usage_by_service': [dict(row) for row in api_usage_by_service],
+                'top_users': [dict(row) for row in top_users]
             }
-        ]
-        
-        translation_stats_cursor = self.db.translation_history.aggregate(translation_pipeline)
-        translation_stats_list = await translation_stats_cursor.to_list(length=1)
-        translation_stats = translation_stats_list[0] if translation_stats_list else {}
-        
-        # API usage by service (last 24 hours)
-        twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
-        api_usage_by_service_pipeline = [
-            {"$match": {"created_at": {"$gte": twenty_four_hours_ago}}},
-            {
-                "$group": {
-                    "_id": "$api_service",
-                    "usage_count": {"$sum": 1},
-                    "avg_response_time": {"$avg": "$response_time_ms"}
-                }
-            }
-        ]
-        
-        api_usage_cursor = self.db.api_usage.aggregate(api_usage_by_service_pipeline)
-        api_usage_by_service = await api_usage_cursor.to_list(length=None)
-        
-        # Top users (last 30 days)
-        thirty_days_ago = datetime.now() - timedelta(days=30)
-        top_users_pipeline = [
-            {"$match": {"created_at": {"$gte": thirty_days_ago}}},
-            {
-                "$group": {
-                    "_id": "$user_id",
-                    "files_translated": {"$sum": 1}
-                }
-            },
-            {"$sort": {"files_translated": -1}},
-            {"$limit": 10}
-        ]
-        
-        top_users_cursor = self.db.translation_history.aggregate(top_users_pipeline)
-        top_users_list = await top_users_cursor.to_list(length=None)
-        
-        # Get user details for top users
-        top_users = []
-        for user_stat in top_users_list:
-            user = await self.db.users.find_one({"user_id": user_stat["_id"]})
-            if user:
-                top_users.append({
-                    "user_id": user["user_id"],
-                    "username": user.get("username"),
-                    "first_name": user.get("first_name"),
-                    "files_translated": user_stat["files_translated"]
-                })
-        
-        return {
-            'total_users': total_users,
-            'active_users_24h': active_users,
-            'translation_stats': translation_stats,
-            'api_usage_by_service': api_usage_by_service,
-            'top_users': top_users
-        }
     
     async def is_user_blocked(self, user_id: int) -> tuple[bool, str]:
         """فحص ما إذا كان المستخدم محظوراً"""
-        result = await self.db.rate_limits.find_one({"user_id": user_id})
-        
-        if result and result.get('is_blocked'):
-            return True, result.get('block_reason') or "No reason provided"
-        
-        return False, ""
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchrow(
+                "SELECT is_blocked, block_reason FROM rate_limits WHERE user_id = $1",
+                user_id
+            )
+            
+            if result and result['is_blocked']:
+                return True, result['block_reason'] or "No reason provided"
+            
+            return False, ""
     
     async def block_user(self, user_id: int, reason: str, blocked_by: int) -> None:
         """حظر مستخدم"""
-        await self.db.rate_limits.update_one(
-            {"user_id": user_id},
-            {
-                "$set": {
-                    "is_blocked": True,
-                    "block_reason": reason,
-                    "updated_at": datetime.now()
-                }
-            },
-            upsert=True
-        )
-        
-        logger.info(f"User {user_id} blocked by {blocked_by}: {reason}")
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO rate_limits (user_id, is_blocked, block_reason, updated_at)
+                VALUES ($1, TRUE, $2, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    is_blocked = TRUE,
+                    block_reason = EXCLUDED.block_reason,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', user_id, reason)
+            
+            logger.info(f"User {user_id} blocked by {blocked_by}: {reason}")
     
     async def unblock_user(self, user_id: int, unblocked_by: int) -> None:
         """إلغاء حظر مستخدم"""
-        await self.db.rate_limits.update_one(
-            {"user_id": user_id},
-            {
-                "$set": {
-                    "is_blocked": False,
-                    "block_reason": None,
-                    "updated_at": datetime.now()
-                }
-            }
-        )
-        
-        logger.info(f"User {user_id} unblocked by {unblocked_by}")
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE rate_limits SET 
+                    is_blocked = FALSE,
+                    block_reason = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = $1
+            ''', user_id)
+            
+            logger.info(f"User {user_id} unblocked by {unblocked_by}")
     
     async def get_bot_setting(self, key: str) -> Optional[str]:
         """الحصول على إعداد من قاعدة البيانات"""
-        result = await self.db.bot_settings.find_one({"key": key})
-        return result["value"] if result else None
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT value FROM bot_settings WHERE key = $1", key
+            )
+            return result
     
     async def set_bot_setting(self, key: str, value: str, description: str = None, updated_by: int = None) -> None:
         """تعيين إعداد في قاعدة البيانات"""
-        bot_setting_doc = {
-            "key": key,
-            "value": value,
-            "description": description,
-            "updated_by": updated_by,
-            "updated_at": datetime.now()
-        }
-        
-        await self.db.bot_settings.update_one(
-            {"key": key},
-            {"$set": bot_setting_doc},
-            upsert=True
-        )
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO bot_settings (key, value, description, updated_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    description = EXCLUDED.description,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', key, value, description, updated_by)
     
     async def get_recent_translations(self, user_id: int = None, limit: int = 10) -> List[Dict]:
         """الحصول على الترجمات الأخيرة"""
-        query = {}
-        if user_id:
-            query["user_id"] = user_id
+        async with self.pool.acquire() as conn:
+            if user_id:
+                results = await conn.fetch('''
+                    SELECT th.*, u.username, u.first_name
+                    FROM translation_history th
+                    JOIN users u ON th.user_id = u.user_id
+                    WHERE th.user_id = $1
+                    ORDER BY th.created_at DESC
+                    LIMIT $2
+                ''', user_id, limit)
+            else:
+                results = await conn.fetch('''
+                    SELECT th.*, u.username, u.first_name
+                    FROM translation_history th
+                    JOIN users u ON th.user_id = u.user_id
+                    ORDER BY th.created_at DESC
+                    LIMIT $1
+                ''', limit)
             
-        cursor = self.db.translation_history.find(query).sort("created_at", -1).limit(limit)
-        results = await cursor.to_list(length=limit)
-        
-        # Add user info to each translation
-        for translation in results:
-            user = await self.db.users.find_one({"user_id": translation["user_id"]})
-            if user:
-                translation["username"] = user.get("username")
-                translation["first_name"] = user.get("first_name")
-        
-        return results
+            return [dict(row) for row in results]
     
     async def cleanup_old_data(self, days_to_keep: int = 30) -> Dict:
         """تنظيف البيانات القديمة"""
-        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-        
-        # Clean old translation history
-        deleted_translations = await self.db.translation_history.delete_many({
-            "created_at": {"$lt": cutoff_date}
-        })
-        
-        # Clean old API usage
-        deleted_api_usage = await self.db.api_usage.delete_many({
-            "created_at": {"$lt": cutoff_date}
-        })
-        
-        logger.info(f"Cleaned up {deleted_translations.deleted_count} old translations and {deleted_api_usage.deleted_count} old API usage records")
-        
-        return {
-            'deleted_translations': deleted_translations.deleted_count,
-            'deleted_api_usage': deleted_api_usage.deleted_count,
-            'cutoff_date': cutoff_date.isoformat()
-        }
+        async with self.pool.acquire() as conn:
+            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+            
+            # Clean old translation history
+            deleted_translations = await conn.fetchval('''
+                DELETE FROM translation_history 
+                WHERE created_at < $1
+                RETURNING COUNT(*)
+            ''', cutoff_date)
+            
+            # Clean old API usage
+            deleted_api_usage = await conn.fetchval('''
+                DELETE FROM api_usage 
+                WHERE created_at < $1
+                RETURNING COUNT(*)
+            ''', cutoff_date)
+            
+            logger.info(f"Cleaned up {deleted_translations} old translations and {deleted_api_usage} old API usage records")
+            
+            return {
+                'deleted_translations': deleted_translations or 0,
+                'deleted_api_usage': deleted_api_usage or 0,
+                'cutoff_date': cutoff_date.isoformat()
+            }
     
     async def close(self):
         """إغلاق اتصال قاعدة البيانات"""
-        if self.client:
-            self.client.close()
+        if self.pool:
+            await self.pool.close()
             logger.info("Database connection closed")
 
 # إنشاء مثيل عام

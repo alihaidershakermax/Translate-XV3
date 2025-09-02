@@ -49,8 +49,8 @@ class Config:
         # Channel settings (disabled - no mandatory subscription)
         self.CHANNEL_USERNAME = None  # Mandatory subscription disabled
         
-        # Database configuration - MongoDB
-        self.DATABASE_URL = os.getenv("DATABASE_URL", "mongodb://localhost:27017/telegram_bot")
+        # Database configuration - PostgreSQL
+        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgres://mammal:vA2_oE4_iM7_qI2_gY1-@asia-east1-001.proxy.kinsta.app:30525/trnsalnat")
         
         # Logging
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
