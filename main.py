@@ -121,13 +121,11 @@ async def main():
             await application.initialize()
             await application.start()
             
-            # Start polling with conflict handling
+            # Start polling with conflict handling (using correct parameters)
             await application.updater.start_polling(
                 allowed_updates=['message', 'callback_query'],
                 drop_pending_updates=True,
-                timeout=30,  # Add timeout
-                read_timeout=30,  # Add read timeout
-                write_timeout=30  # Add write timeout
+                timeout=30  # Only use supported timeout parameter
             )
             
             # Keep the bot running
