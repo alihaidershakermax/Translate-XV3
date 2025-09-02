@@ -17,7 +17,7 @@ from telegram.constants import ChatAction
 
 from config import Config
 from file_handlers import FileProcessor
-from translator import GeminiTranslator
+from translator import LocalDictionaryTranslator
 from document_generator import WordDocumentGenerator
 from utils import RateLimiter, DailyRateLimiter, FileCleanupManager
 from ui_config import ui_config
@@ -35,8 +35,9 @@ class BotHandlers:
         """Initialize the bot handlers with necessary components."""
         self.config = config
         self.file_processor = FileProcessor()
-        # Initialize multi_api_manager with config which contains the list of API keys
-        self.translator = GeminiTranslator(config.GEMINI_API_KEY, config.GEMINI_MODEL) # Still keep one as default
+        # Initialize local dictionary translator as the primary translator
+        self.translator = LocalDictionaryTranslator()
+        # Keep the multi translator manager for compatibility but it won't be used for actual translation
         self.translator_manager = MultiGeminiTranslatorManager(config.GEMINI_API_KEYS, config.GEMINI_MODEL)
 
         self.document_generator = WordDocumentGenerator()
@@ -245,19 +246,29 @@ class BotHandlers:
         # Send initial status
         message = await update.message.reply_text(status_message)
 
+        # Test translation using local dictionary
+        try:
+            test_result = await self.translator.translate_single_line("Hello")
+            if test_result and test_result != "Hello":
+                api_status += f"✅ Local Dictionary Translation: Working (Translated 'Hello' to '{test_result}')\n"
+            else:
+                api_status += "⚠️ Local Dictionary Translation: Limited vocabulary\n"
+        except Exception as e:
+            api_status += f"❌ Local Dictionary Translation: Error - {str(e)}\n"
+
         # Test API connection
         try:
             test_result = await self.translator_manager.translate_single_line("Hello")
             if test_result and test_result != "Hello":
-                api_status = "🟢 Google Gemini API متصل ويعمل"
+                api_status += "✅ Google Gemini API متصل ويعمل\n"
             else:
-                api_status = "🟡 Google Gemini API متصل لكن قد يكون هناك مشاكل"
+                api_status += "🟡 Google Gemini API متصل لكن قد يكون هناك مشاكل\n"
         except Exception as api_error:
             error_str = str(api_error)
             if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                api_status = "🔴 تم تجاوز حصة الترجمة اليومية"
+                api_status += "🔴 تم تجاوز حصة الترجمة اليومية\n"
             else:
-                api_status = "🔴 Google Gemini API غير متاح"
+                api_status += "🔴 Google Gemini API غير متاح\n"
 
         # Update with API test results
         updated_status = f"""
@@ -601,11 +612,11 @@ class BotHandlers:
             await asyncio.sleep(0.2)
 
             # Step 2: Start translation with real progress
-            # Use the multi-API translator manager
-            translated_pairs = await self.translator_manager.translate_lines_with_progress(
-                file_info['text_lines'],
-                lambda current, total, status: self._update_progress_query_real(query, current, total, status)
-            )
+            # Use the local dictionary translator instead of multi-API translator
+            translated_pairs = await self.translator.translate_lines(file_info['text_lines'])
+            
+            # Simulate progress for consistency with UI
+            await self._update_progress_query_real(query, total_lines, total_lines, "إنشاء المستند المترجم")
 
             # Step 3: Generate document
             await self._update_progress_query_real(query, total_lines, total_lines, "إنشاء المستند المنسق")

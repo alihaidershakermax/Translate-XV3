@@ -195,188 +195,100 @@ class MultiGeminiTranslatorManager:
             return text
 
     async def translate_single_line(self, text: str) -> str:
-        """ترجمة سطر واحد - محسّن للأداء مع دعم Groq"""
+        """ترجمة سطر واحد باستخدام القاموس المحلي"""
         if not text or text.strip() == "":
             return ""
             
-        # Skip very short or non-meaningful text
-        clean_text = text.strip()
-        if len(clean_text) < 2 or clean_text.isdigit():
-            return clean_text
-
-        async with self.semaphore:
-            max_retries = 2  # Reduced retries for single lines
-
-            # Try Gemini first
-            for attempt in range(max_retries):
-                try:
-                    api_key = multi_api_manager.get_current_api_key()
-                    if not api_key:
-                        # If no Gemini keys available, try Groq
-                        logger.info("No Gemini keys available, trying Groq")
-                        return await self.translate_with_groq(clean_text)
-
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(self.model)
-
-                    # Use the same approach as the primary translator with math preservation
-                    # Extract mathematical expressions
-                    math_translator = GeminiTranslator()  # Use the same class for math handling
-                    text_without_math, math_expressions = math_translator._extract_math_expressions(clean_text)
-                    
-                    # Prepare translation prompt with math preservation
-                    prompt = f"""Translate the following English text to Arabic. 
-Keep mathematical expressions, formulas, equations, and symbols EXACTLY as they appear.
-Do not translate mathematical terms, variable names, or scientific notation.
-Preserve the natural flow and meaning of the text:
-
-{text_without_math}
-
-Important: Maintain paragraph structure and do not add line numbers."""
-
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(model.generate_content, prompt),
-                        timeout=20  # Reduced timeout for single lines
-                    )
-
-                    if response and response.text:
-                        translated_text = response.text.strip()
-                        # Restore mathematical expressions
-                        translated_text = math_translator._restore_math_expressions(translated_text, math_expressions)
-                        return translated_text
-                    else:
-                        raise Exception("No response from API")
-
-                except Exception as e:
-                    error_str = str(e)
-                    if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                        multi_api_manager.mark_key_failed(api_key, "API limit reached")
-                        if attempt == max_retries - 1:
-                            # Use Deep Translator as final fallback
-                            from deep_translator_wrapper import deep_translator
-                            return await deep_translator.translate_text(text)
-                    else:
-                        logger.warning(f"Translation attempt {attempt + 1} failed: {e}")
-                        if attempt == max_retries - 1:
-                            # Use Deep Translator as final fallback
-                            from deep_translator_wrapper import deep_translator
-                            return await deep_translator.translate_text(text)
-
-                    await asyncio.sleep(0.5)  # Shorter delay
-
-            return clean_text  # Return original if all attempts fail
+        try:
+            # Use local translator instead of external APIs
+            from local_translator import LocalTranslator
+            local_translator = LocalTranslator()
+            translated = await local_translator.translate_text(text)
+            return translated
+        except Exception as e:
+            logger.error(f"Local translation failed: {e}")
+            return text
 
     async def translate_lines_with_progress(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
-        """ترجمة عدة أسطر مع تحديث التقدم - إصدار محسّن للدفعات"""
-        # Use the same approach as the primary translator with smart chunking
-        from translator import GeminiTranslator
-        translator = GeminiTranslator()
-        return await translator.translate_lines(lines)
-
-    async def translate_batch_with_groq(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
-        """ترجمة دفعية باستخدام Groq"""
-        if not self.groq_client or not lines:
-            return [(line, line) for line in lines]
-
+        """ترجمة عدة أسطر باستخدام القاموس المحلي"""
         try:
             if progress_callback:
-                await progress_callback(0, 100, "ترجمة باستخدام Groq")
+                await progress_callback(0, 100, "بدء الترجمة باستخدام القاموس المحلي")
 
-            # Use the same approach as the primary translator with math preservation
-            from translator import GeminiTranslator
-            math_translator = GeminiTranslator()
-            
-            # Process lines with smart chunking approach
-            chunks = math_translator._create_smart_chunks(lines)
-            translated_pairs = []
-
-            for chunk in chunks:
-                # Combine chunk into paragraph for better context
-                combined_text = " ".join(chunk)
-                
-                # Extract mathematical expressions
-                text_without_math, math_expressions = math_translator._extract_math_expressions(combined_text)
-                
-                messages = [
-                    {
-                        "role": "user",
-                        "content": f"""Translate the following English text to Arabic. 
-Keep mathematical expressions, formulas, equations, and symbols EXACTLY as they appear.
-Do not translate mathematical terms, variable names, or scientific notation.
-Preserve the natural flow and meaning of the text:
-
-{text_without_math}
-
-Important: Maintain paragraph structure."""
-                    }
-                ]
-
-                if progress_callback:
-                    await progress_callback(50, 100, "إرسال للـ Groq")
-
-                completion = await asyncio.to_thread(
-                    self.groq_client.chat.completions.create,
-                    model=self.groq_model,
-                    messages=messages,
-                    temperature=0.3,
-                    max_tokens=2048,
-                    top_p=1,
-                    stream=False
-                )
-
-                if completion.choices and completion.choices[0].message.content:
-                    translated_text = completion.choices[0].message.content.strip()
-                    # Restore mathematical expressions
-                    translated_text = math_translator._restore_math_expressions(translated_text, math_expressions)
-                    # Create pairs - one pair per chunk for better formatting
-                    original_combined = " ".join(chunk)
-                    translated_pairs.append((original_combined, translated_text))
-                else:
-                    # Fallback to original text
-                    original_combined = " ".join(chunk)
-                    translated_pairs.append((original_combined, original_combined))
+            # Use local translator instead of external APIs
+            from local_translator import LocalTranslator
+            local_translator = LocalTranslator()
+            result = await local_translator.translate_lines(lines)
 
             if progress_callback:
-                await progress_callback(100, 100, "اكتملت الترجمة باستخدام Groq")
+                await progress_callback(100, 100, "اكتملت الترجمة باستخدام القاموس المحلي")
 
-            return translated_pairs
-
+            return result
         except Exception as e:
-            logger.error(f"Groq batch translation failed: {e}")
-            # Fallback to line-by-line translation
-            return await self.translate_lines_fallback(lines, progress_callback)
+            logger.error(f"Local batch translation failed: {e}")
+            # Return original text as fallback
+            return [(line, line) for line in lines]
+
+    async def translate_batch_with_groq(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
+        """ترجمة دفعية باستخدام القاموس المحلي"""
+        try:
+            if progress_callback:
+                await progress_callback(0, 100, "بدء الترجمة باستخدام القاموس المحلي")
+
+            # Use local translator instead of external APIs
+            from local_translator import LocalTranslator
+            local_translator = LocalTranslator()
+            result = await local_translator.translate_lines(lines)
+
+            if progress_callback:
+                await progress_callback(100, 100, "اكتملت الترجمة باستخدام القاموس المحلي")
+
+            return result
+        except Exception as e:
+            logger.error(f"Local batch translation failed: {e}")
+            # Return original text as fallback
+            return [(line, line) for line in lines]
 
     async def translate_batch_with_progress(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
-        """ترجمة النص كدفعة واحدة لتقليل استهلاك API مع دعم Groq"""
-        # Use the same approach as the primary translator
-        from translator import GeminiTranslator
-        translator = GeminiTranslator()
-        return await translator.translate_lines(lines)
+        """ترجمة النص باستخدام القاموس المحلي"""
+        try:
+            if progress_callback:
+                await progress_callback(0, 100, "بدء الترجمة باستخدام القاموس المحلي")
+
+            # Use local translator instead of external APIs
+            from local_translator import LocalTranslator
+            local_translator = LocalTranslator()
+            result = await local_translator.translate_lines(lines)
+
+            if progress_callback:
+                await progress_callback(100, 100, "اكتملت الترجمة باستخدام القاموس المحلي")
+
+            return result
+        except Exception as e:
+            logger.error(f"Local batch translation failed: {e}")
+            # Return original text as fallback
+            return [(line, line) for line in lines]
 
     async def translate_lines_fallback(self, lines: List[str], progress_callback: Callable = None) -> List[Tuple[str, str]]:
-        """طريقة احتياطية - ترجمة سطر بسطر باستخدام نفس النهج"""
-        logger.info("Using fallback line-by-line translation with consistent approach")
-        translated_pairs = []
-
-        # Use the same approach as the primary translator for single line translation
-        from translator import GeminiTranslator
-        translator = GeminiTranslator()
-        
-        for i, line in enumerate(lines):
+        """طريقة احتياطية - ترجمة باستخدام القاموس المحلي"""
+        logger.info("Using local dictionary translation")
+        try:
             if progress_callback:
-                await progress_callback(i, len(lines), f"ترجمة السطر {i+1} (نظام احتياطي)")
+                await progress_callback(0, len(lines), "بدء الترجمة باستخدام القاموس المحلي")
 
-            translated = await translator.translate_single_line(line)
-            translated_pairs.append((line, translated))
+            # Use local translator instead of external APIs
+            from local_translator import LocalTranslator
+            local_translator = LocalTranslator()
+            result = await local_translator.translate_lines(lines)
 
-            # Small delay to avoid overwhelming the API
-            if i % 3 == 0 and i > 0:
-                await asyncio.sleep(0.3)
+            if progress_callback:
+                await progress_callback(len(lines), len(lines), "اكتملت الترجمة باستخدام القاموس المحلي")
 
-        if progress_callback:
-            await progress_callback(len(lines), len(lines), "اكتملت الترجمة (نظام احتياطي)")
-
-        return translated_pairs
+            return result
+        except Exception as e:
+            logger.error(f"Local fallback translation failed: {e}")
+            # Return original text as fallback
+            return [(line, line) for line in lines]
 
     def get_all_keys(self) -> List[str]:
         """الحصول على جميع مفاتيح API"""
