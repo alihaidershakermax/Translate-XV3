@@ -151,7 +151,7 @@ class WordDocumentGenerator:
         original_filename: str = "document"
     ) -> Path:
         """
-        Create a Word document with original English and Arabic translations.
+        Create a Word document with original English and Arabic translations in proper format.
 
         Args:
             translated_pairs: List of (original_text, translated_text) tuples
@@ -168,29 +168,107 @@ class WordDocumentGenerator:
             # Create a new document
             doc = Document()
 
-            # Add header information at the top (centered English)
+            # Add header information at the top
             header_info = doc.add_paragraph()
-            header_info.add_run(f"Translation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n").font.size = Pt(11)
-            header_info.add_run("Developer: @dextermorgenk").font.size = Pt(11)
+            header_run1 = header_info.add_run(f"Translation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            header_run1.font.size = Pt(12)
+            header_run1.font.name = 'Times New Roman'
+            
+            header_run2 = header_info.add_run("Developer: @dextermorgenk")
+            header_run2.font.size = Pt(12)
+            header_run2.font.name = 'Times New Roman'
             header_info.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            # Add spacing
             doc.add_paragraph()
 
-            # No title or metadata - just clean content
-            # Skip unwanted headers and go straight to translations
-
-            # Process each translation pair
+            # Process each translation pair with improved formatting
             for i, (original_text, translated_text) in enumerate(translated_pairs, 1):
-                await self._add_translation_pair(doc, i, original_text, translated_text)
+                await self._add_structured_translation_pair(doc, i, original_text, translated_text)
 
             # Save the document
             doc.save(str(output_path))
 
-            logger.info(f"Created bilingual document with {len(translated_pairs)} translation pairs")
+            logger.info(f"Created structured bilingual document with {len(translated_pairs)} translation pairs")
             return output_path
 
         except Exception as e:
             logger.error(f"Failed to create Word document: {e}")
             raise Exception(f"Document generation failed: {str(e)}")
+
+    async def _add_structured_translation_pair(
+        self,
+        doc,
+        index: int,
+        original_text: str,
+        translated_text: str
+    ):
+        """Add a structured translation pair maintaining original document format."""
+        try:
+            # Clean translated text first
+            clean_arabic = self._clean_arabic_translation(translated_text)
+
+            # Check if this is a title/heading (typically shorter text or contains certain formatting)
+            is_heading = len(original_text.strip()) < 100 and (
+                original_text.isupper() or 
+                original_text.strip().endswith(':') or
+                any(word in original_text.lower() for word in ['chapter', 'section', 'part', 'lab', 'experiment'])
+            )
+
+            if is_heading:
+                # Format as heading
+                heading_para = doc.add_paragraph()
+                
+                # English heading
+                eng_run = heading_para.add_run(original_text)
+                eng_run.font.name = 'Times New Roman'
+                eng_run.font.size = Pt(ui_config.current_arabic_font_size + 2)
+                eng_run.font.bold = True
+                eng_run.font.color.rgb = RGBColor(0, 0, 0)
+                
+                # Add line break
+                heading_para.add_run('\n')
+                
+                # Arabic heading
+                ar_run = heading_para.add_run(clean_arabic)
+                ar_run.font.name = 'Arial Unicode MS'
+                ar_run.font.size = Pt(ui_config.current_arabic_font_size + 2)
+                ar_run.font.bold = True
+                ar_run.font.color.rgb = RGBColor(0, 0, 0)
+                
+                heading_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+            else:
+                # Format as regular content with proper structure
+                content_para = doc.add_paragraph()
+                
+                # English text
+                eng_run = content_para.add_run(original_text)
+                eng_run.font.name = 'Times New Roman'
+                eng_run.font.size = Pt(ui_config.current_arabic_font_size)
+                eng_run.font.color.rgb = RGBColor(0, 0, 0)
+                
+                # Add spacing between English and Arabic
+                content_para.add_run('\n')
+                
+                # Arabic text
+                ar_run = content_para.add_run(clean_arabic)
+                ar_run.font.name = 'Arial Unicode MS'
+                ar_run.font.size = Pt(ui_config.current_arabic_font_size)
+                ar_run.font.color.rgb = RGBColor(0, 0, 0)
+                
+                content_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+            # Add spacing between sections
+            if index < len(translated_pairs):
+                spacing_para = doc.add_paragraph()
+                spacing_para.add_run(' ')
+                spacing_para.space_after = Pt(6)
+
+        except Exception as e:
+            logger.warning(f"Failed to add structured translation pair {index}: {e}")
+            # Fallback to simple format
+            await self._add_translation_pair(doc, index, original_text, translated_text)
 
     async def _add_translation_pair(
         self,
@@ -204,7 +282,7 @@ class WordDocumentGenerator:
             # Add English text paragraph (preserving original structure)
             english_para = doc.add_paragraph()
             english_run = english_para.add_run(original_text)
-            english_run.font.name = 'Arial'
+            english_run.font.name = 'Times New Roman'
             english_run.font.size = Pt(ui_config.current_arabic_font_size)
             english_run.font.color.rgb = RGBColor(0, 0, 0)
             english_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -418,7 +496,7 @@ class WordDocumentGenerator:
         original_filename: str = "document"
     ) -> Path:
         """
-        Create a simple bilingual PDF document with plain English and Arabic text.
+        Create a structured bilingual PDF document matching original format.
 
         Args:
             translated_pairs: List of (original_text, translated_text) tuples
@@ -429,10 +507,10 @@ class WordDocumentGenerator:
             Path to the created PDF document
         """
         try:
-            # Create PDF document with simple margins and no page numbers
+            # Create PDF document with proper margins
             doc = SimpleDocTemplateNoPageNumbers(str(output_path), pagesize=A4,
-                                                 rightMargin=50, leftMargin=50,
-                                                 topMargin=50, bottomMargin=50)
+                                                 rightMargin=72, leftMargin=72,
+                                                 topMargin=72, bottomMargin=72)
 
             # Create styles
             styles = getSampleStyleSheet()
@@ -440,92 +518,100 @@ class WordDocumentGenerator:
             # Register Arabic-supporting fonts
             self._setup_arabic_fonts()
 
-            # Simple title style - no colors
-            title_style = ParagraphStyle(
-                'SimpleTitle',
-                parent=styles['Heading1'],
-                alignment=TA_CENTER,
-                fontSize=18,  # Increased font size
-                spaceAfter=20,
-                spaceBefore=10,
-                fontName=self._registered_font,
-                textColor=colors.black
-            )
-
-            # Simple English text style
-            english_style = ParagraphStyle(
-                'PlainEnglishText',
-                parent=styles['Normal'],
-                alignment=TA_LEFT,
-                fontSize=14,  # Increased font size
-                spaceAfter=6,
-                spaceBefore=0,
-                fontName=self._registered_font,
-                leading=18,  # Increased leading
-                textColor=colors.black
-            )
-
-            # Simple Arabic text style (left aligned as requested)
-            arabic_style = ParagraphStyle(
-                'PlainArabicText',
-                parent=styles['Normal'],
-                alignment=TA_LEFT,  # Changed to left alignment as requested
-                fontSize=18,  # Increased font size
-                spaceAfter=10,
-                spaceBefore=0,
-                fontName=self._registered_font,
-                leading=24,  # Increased leading
-                textColor=colors.black
-            )
-
-            # Build simple content
-            content = []
-
-            # Header information style - centered English text
+            # Header style
             header_style = ParagraphStyle(
                 'HeaderInfo',
                 parent=styles['Normal'],
                 alignment=TA_CENTER,
-                fontSize=14,  # Increased font size
-                spaceAfter=3,
+                fontSize=12,
+                spaceAfter=5,
                 spaceBefore=0,
                 fontName=self._registered_font,
-                leading=18,  # Increased leading
+                leading=16,
                 textColor=colors.black
             )
 
-            # Add header information in English (centered at top) - no filename
+            # Heading style for titles/sections
+            heading_style = ParagraphStyle(
+                'SectionHeading',
+                parent=styles['Heading2'],
+                alignment=TA_CENTER,
+                fontSize=16,
+                spaceAfter=12,
+                spaceBefore=12,
+                fontName=self._registered_font,
+                textColor=colors.black,
+                borderWidth=0
+            )
+
+            # English content style
+            english_style = ParagraphStyle(
+                'EnglishContent',
+                parent=styles['Normal'],
+                alignment=TA_JUSTIFY,
+                fontSize=ui_config.PDF_STYLES['english_size'],
+                spaceAfter=4,
+                spaceBefore=0,
+                fontName=self._registered_font,
+                leading=ui_config.PDF_STYLES['english_size'] + 4,
+                textColor=colors.black
+            )
+
+            # Arabic content style
+            arabic_style = ParagraphStyle(
+                'ArabicContent',
+                parent=styles['Normal'],
+                alignment=TA_RIGHT,
+                fontSize=ui_config.PDF_STYLES['arabic_size'],
+                spaceAfter=8,
+                spaceBefore=4,
+                fontName=self._registered_font,
+                leading=ui_config.PDF_STYLES['arabic_size'] + 6,
+                textColor=colors.black
+            )
+
+            # Build structured content
+            content = []
+
+            # Add header information
             content.append(Paragraph(f"Translation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", header_style))
             content.append(Paragraph("Developer: @dextermorgenk", header_style))
-            content.append(Spacer(1, 30)) # Increased spacing
+            content.append(Spacer(1, 24))
 
-            # Skip title - no unwanted text
-
-            # Add simple bilingual translations
+            # Process each translation pair with structure detection
             for i, (original_text, translated_text) in enumerate(translated_pairs, 1):
-                # Small separator between sections
-                if i > 1:
-                    content.append(Spacer(1, 10))
-
-                # Add English text
-                content.append(Paragraph(original_text, english_style))
-
-                # Clean and add Arabic translation
                 clean_arabic = self._clean_arabic_translation(translated_text)
                 display_arabic = self._clean_text_for_pdf(clean_arabic)
-                content.append(Paragraph(display_arabic, arabic_style))
 
-                content.append(Spacer(1, 8))
+                # Detect if this is a heading/title
+                is_heading = len(original_text.strip()) < 100 and (
+                    original_text.isupper() or 
+                    original_text.strip().endswith(':') or
+                    any(word in original_text.lower() for word in ['chapter', 'section', 'part', 'lab', 'experiment'])
+                )
 
-            # Build simple PDF
+                if is_heading:
+                    # Format as heading
+                    combined_heading = f"{original_text}<br/>{display_arabic}"
+                    content.append(Paragraph(combined_heading, heading_style))
+                    content.append(Spacer(1, 12))
+                else:
+                    # Format as regular content
+                    if i > 1:
+                        content.append(Spacer(1, 6))
+                    
+                    content.append(Paragraph(original_text, english_style))
+                    content.append(Paragraph(display_arabic, arabic_style))
+
+            # Build PDF
             doc.build(content)
 
-            logger.info(f"Created simple bilingual PDF with {len(translated_pairs)} translation pairs")
+            logger.info(f"Created structured bilingual PDF with {len(translated_pairs)} translation pairs")
             return output_path
 
         except Exception as e:
             logger.error(f"Failed to create bilingual PDF: {e}")
-            raise Exception(f"Simple bilingual PDF generation failed: {str(e)}")
+            raise Exception(f"Structured bilingual PDF generation failed: {str(e)}")
 
     def _is_arabic(self, text: str) -> bool:
         """Check if the text contains Arabic characters."""
