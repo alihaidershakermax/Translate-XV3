@@ -9,7 +9,9 @@ import logging
 import os
 import signal
 import sys
+import time
 from telegram.ext import Application
+from telegram.error import Conflict
 
 # Add this for Render port binding
 import http.server
@@ -119,16 +121,34 @@ async def main():
             await application.initialize()
             await application.start()
             
-            # Start polling
+            # Start polling with conflict handling
             await application.updater.start_polling(
                 allowed_updates=['message', 'callback_query'],
-                drop_pending_updates=True
+                drop_pending_updates=True,
+                timeout=30,  # Add timeout
+                read_timeout=30,  # Add read timeout
+                write_timeout=30  # Add write timeout
             )
             
             # Keep the bot running
             while True:
                 await asyncio.sleep(1)
                 
+        except Conflict as e:
+            logger.error(f"Conflict error: {e}")
+            logger.info("Attempting to resolve conflict by waiting and retrying...")
+            # Wait for a few seconds and try to recover
+            await asyncio.sleep(5)
+            # Try to stop the updater and restart
+            try:
+                if application.updater.running:
+                    await application.updater.stop()
+            except Exception as stop_error:
+                logger.error(f"Error stopping updater: {stop_error}")
+            
+            # Retry starting the bot
+            raise Exception("Conflict detected, restarting bot...")
+            
         except asyncio.CancelledError:
             logger.info("Bot polling was cancelled")
         except Exception as e:
@@ -137,10 +157,11 @@ async def main():
         finally:
             # Clean shutdown
             try:
-                if application.updater.running:
+                if application and application.updater and application.updater.running:
                     await application.updater.stop()
-                await application.stop()
-                await application.shutdown()
+                if application:
+                    await application.stop()
+                    await application.shutdown()
                 await db_manager.close()
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
@@ -151,45 +172,64 @@ async def main():
 
 def run_bot():
     """Entry point that properly handles the event loop."""
-    try:
-        # Start health check server in a separate thread for Render
-        health_thread = threading.Thread(target=start_health_server, daemon=True)
-        health_thread.start()
-        
-        # Check if we're in a deployment environment
-        if os.getenv("REPLIT_DEPLOYMENT"):
-            # Running in deployment mode
-            sys.stdout.reconfigure(encoding='utf-8')
-            sys.stderr.reconfigure(encoding='utf-8')
-        
-        # Use asyncio.new_event_loop() to avoid conflicts
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
         try:
-            loop.run_until_complete(main())
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
-        except Exception as e:
-            logger.error(f"Bot crashed: {e}")
-        finally:
-            # Clean up the loop
+            # Start health check server in a separate thread for Render
+            health_thread = threading.Thread(target=start_health_server, daemon=True)
+            health_thread.start()
+            
+            # Check if we're in a deployment environment
+            if os.getenv("REPLIT_DEPLOYMENT"):
+                # Running in deployment mode
+                sys.stdout.reconfigure(encoding='utf-8')
+                sys.stderr.reconfigure(encoding='utf-8')
+            
+            # Use asyncio.new_event_loop() to avoid conflicts
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
             try:
-                pending_tasks = asyncio.all_tasks(loop)
-                for task in pending_tasks:
-                    task.cancel()
-                
-                if pending_tasks:
-                    loop.run_until_complete(asyncio.gather(*pending_tasks, return_exceptions=True))
-                    
+                loop.run_until_complete(main())
+                break  # If successful, break out of retry loop
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+                break
             except Exception as e:
-                logger.error(f"Error cleaning up tasks: {e}")
+                retry_count += 1
+                logger.error(f"Bot attempt {retry_count} failed: {e}")
+                if retry_count < max_retries:
+                    logger.info(f"Retrying in 10 seconds... ({retry_count}/{max_retries})")
+                    time.sleep(10)
+                else:
+                    logger.error("Max retries reached. Exiting.")
+                    sys.exit(1)
             finally:
-                loop.close()
-                
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1)
+                # Clean up the loop
+                try:
+                    pending_tasks = asyncio.all_tasks(loop)
+                    for task in pending_tasks:
+                        task.cancel()
+                    
+                    if pending_tasks:
+                        loop.run_until_complete(asyncio.gather(*pending_tasks, return_exceptions=True))
+                        
+                except Exception as e:
+                    logger.error(f"Error cleaning up tasks: {e}")
+                finally:
+                    loop.close()
+                    
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                logger.info(f"Retrying in 10 seconds... ({retry_count}/{max_retries})")
+                time.sleep(10)
+            else:
+                logger.error("Max retries reached. Exiting.")
+                sys.exit(1)
 
 if __name__ == "__main__":
     run_bot()

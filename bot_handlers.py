@@ -1072,6 +1072,14 @@ def register_handlers(application):
     config = Config()
     bot_handlers = BotHandlers(config)
 
+    # Clean up any existing webhook to prevent conflicts
+    try:
+        # Delete any existing webhook
+        application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Cleaned up existing webhook")
+    except Exception as e:
+        logger.warning(f"Could not clean up webhook: {e}")
+
     # Add handlers to application
     application.add_handler(CommandHandler("start", bot_handlers.start_command))
     application.add_handler(CommandHandler("help", bot_handlers.help_command))
