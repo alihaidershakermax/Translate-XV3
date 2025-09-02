@@ -9,9 +9,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8
 
-# Install system dependencies
+# Install system dependencies including fonts
 RUN apt-get update && apt-get install -y \
     gcc \
+    fonts-noto \
+    fonts-liberation \
+    fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements file
@@ -24,7 +27,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy project files
 COPY . .
 
-# Expose port (Telegram bots don't actually need to expose ports, but Render requires it)
+# Expose port for Render
 EXPOSE 8080
 
 # Health check

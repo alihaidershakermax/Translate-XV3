@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Telegram Bot for PDF/Word Translation
@@ -11,6 +10,11 @@ import os
 import signal
 import sys
 from telegram.ext import Application
+
+# Add this for Render port binding
+import http.server
+import socketserver
+import threading
 
 from config import Config
 from bot_handlers import register_handlers
@@ -29,6 +33,29 @@ logger = logging.getLogger(__name__)
 
 # Global variable to track the application
 application = None
+
+# Add this for Render port binding
+def start_health_server():
+    """Start a simple HTTP server for health checks on Render"""
+    port = int(os.environ.get('PORT', 8080))
+    
+    class HealthHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'Healthy')
+            else:
+                self.send_response(404)
+                self.end_headers()
+    
+    try:
+        httpd = socketserver.TCPServer(("", port), HealthHandler)
+        logger.info(f"Health check server started on port {port}")
+        httpd.serve_forever()
+    except Exception as e:
+        logger.error(f"Failed to start health check server: {e}")
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -125,6 +152,10 @@ async def main():
 def run_bot():
     """Entry point that properly handles the event loop."""
     try:
+        # Start health check server in a separate thread for Render
+        health_thread = threading.Thread(target=start_health_server, daemon=True)
+        health_thread.start()
+        
         # Check if we're in a deployment environment
         if os.getenv("REPLIT_DEPLOYMENT"):
             # Running in deployment mode
