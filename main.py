@@ -12,6 +12,7 @@ import sys
 import time
 from telegram.ext import Application
 from telegram.error import Conflict
+from telegram import Bot
 
 # Add this for Render port binding
 import http.server
@@ -85,6 +86,17 @@ async def shutdown_application():
         except Exception as e:
             logger.error(f"Error shutting down application: {e}")
 
+async def cleanup_webhook(bot_token):
+    """Clean up any existing webhook to prevent conflicts."""
+    try:
+        bot = Bot(token=bot_token)
+        # Delete any existing webhook
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Cleaned up existing webhook successfully")
+        await bot.shutdown()
+    except Exception as e:
+        logger.warning(f"Could not clean up webhook: {e}")
+
 async def main():
     """Main function to start the bot."""
     global application
@@ -99,6 +111,12 @@ async def main():
 
         if not config.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable is required")
+
+        # Clean up any existing webhook before starting
+        await cleanup_webhook(config.TELEGRAM_BOT_TOKEN)
+
+        # Wait a bit to ensure cleanup is complete
+        await asyncio.sleep(2)
 
         # Initialize database
         await db_manager.initialize()
@@ -134,12 +152,13 @@ async def main():
                 
         except Conflict as e:
             logger.error(f"Conflict error: {e}")
-            logger.info("Attempting to resolve conflict by waiting and retrying...")
-            # Wait for a few seconds and try to recover
+            logger.info("Attempting to resolve conflict by cleaning up webhook and retrying...")
+            # Clean up webhook and wait before retrying
+            await cleanup_webhook(config.TELEGRAM_BOT_TOKEN)
             await asyncio.sleep(5)
             # Try to stop the updater and restart
             try:
-                if application.updater.running:
+                if application.updater and application.updater.running:
                     await application.updater.stop()
             except Exception as stop_error:
                 logger.error(f"Error stopping updater: {stop_error}")
@@ -170,7 +189,7 @@ async def main():
 
 def run_bot():
     """Entry point that properly handles the event loop."""
-    max_retries = 3
+    max_retries = 5  # Increased retries
     retry_count = 0
     
     while retry_count < max_retries:
@@ -199,8 +218,8 @@ def run_bot():
                 retry_count += 1
                 logger.error(f"Bot attempt {retry_count} failed: {e}")
                 if retry_count < max_retries:
-                    logger.info(f"Retrying in 10 seconds... ({retry_count}/{max_retries})")
-                    time.sleep(10)
+                    logger.info(f"Retrying in 15 seconds... ({retry_count}/{max_retries})")
+                    time.sleep(15)  # Increased wait time
                 else:
                     logger.error("Max retries reached. Exiting.")
                     sys.exit(1)
@@ -223,8 +242,8 @@ def run_bot():
             logger.error(f"Fatal error: {e}")
             retry_count += 1
             if retry_count < max_retries:
-                logger.info(f"Retrying in 10 seconds... ({retry_count}/{max_retries})")
-                time.sleep(10)
+                logger.info(f"Retrying in 15 seconds... ({retry_count}/{max_retries})")
+                time.sleep(15)  # Increased wait time
             else:
                 logger.error("Max retries reached. Exiting.")
                 sys.exit(1)
