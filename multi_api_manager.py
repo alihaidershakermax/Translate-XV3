@@ -237,15 +237,15 @@ class MultiGeminiTranslatorManager:
                     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
                         multi_api_manager.mark_key_failed(api_key, "API limit reached")
                         if attempt == max_retries - 1:
-                            # Use local translator as final fallback
-                            from local_translator import local_translator
-                            return await local_translator.translate_text(text)
+                            # Use Deep Translator as final fallback
+                            from deep_translator_wrapper import deep_translator
+                            return await deep_translator.translate_text(text)
                     else:
                         logger.warning(f"Translation attempt {attempt + 1} failed: {e}")
                         if attempt == max_retries - 1:
-                            # Use local translator as final fallback
-                            from local_translator import local_translator
-                            return await local_translator.translate_text(text)
+                            # Use Deep Translator as final fallback
+                            from deep_translator_wrapper import deep_translator
+                            return await deep_translator.translate_text(text)
 
                     await asyncio.sleep(0.5)  # Shorter delay
 

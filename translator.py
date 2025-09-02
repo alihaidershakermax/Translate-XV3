@@ -1,4 +1,3 @@
-
 """
 Translation module using Google Gemini API.
 Handles English to Arabic translation with proper error handling.
@@ -120,16 +119,16 @@ Keep the same numbering format and return only the Arabic translations:
                     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
                         multi_api_manager.mark_key_failed(api_key, "API limit reached")
                         if attempt == max_retries - 1:
-                            # Use local translator as final fallback
-                            from local_translator import local_translator
-                            result = await local_translator.translate_lines(batch)
+                            # Use Deep Translator as final fallback
+                            from deep_translator_wrapper import deep_translator
+                            result = await deep_translator.translate_lines(lines)
                             return result
                     else:
                         logger.warning(f"Translation attempt {attempt + 1} failed: {e}")
                         if attempt == max_retries - 1:
-                            # Use local translator as final fallback
-                            from local_translator import local_translator
-                            result = await local_translator.translate_lines(batch)
+                            # Use Deep Translator as final fallback
+                            from deep_translator_wrapper import deep_translator
+                            result = await deep_translator.translate_lines(lines)
                             return result
                     
                     await asyncio.sleep(1)
@@ -272,21 +271,21 @@ Important: Maintain paragraph structure and do not add line numbers."""
                     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
                         multi_api_manager.mark_key_failed(api_key, "API limit reached")
                         if attempt == max_retries - 1:
-                            # Use local translator as final fallback
-                            from local_translator import local_translator
+                            # Use Deep Translator as final fallback
+                            from deep_translator_wrapper import deep_translator
                             result = []
                             for line in chunk:
-                                translated = await local_translator.translate_text(line)
+                                translated = await deep_translator.translate_text(line)
                                 result.append((line, translated))
                             return result
                     else:
                         logger.warning(f"Translation attempt {attempt + 1} failed: {e}")
                         if attempt == max_retries - 1:
-                            # Use local translator as final fallback
-                            from local_translator import local_translator
+                            # Use Deep Translator as final fallback
+                            from deep_translator_wrapper import deep_translator
                             result = []
                             for line in chunk:
-                                translated = await local_translator.translate_text(line)
+                                translated = await deep_translator.translate_text(line)
                                 result.append((line, translated))
                             return result
                     
