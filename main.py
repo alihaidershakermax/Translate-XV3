@@ -110,7 +110,7 @@ async def main():
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
 
         if not config.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY environment variable is required")
+            logger.warning("GEMINI_API_KEY is not set. Proceeding with local/Groq translation fallbacks if available.")
 
         # Clean up any existing webhook before starting
         await cleanup_webhook(config.TELEGRAM_BOT_TOKEN)
